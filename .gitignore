@@ -17,3 +17,8 @@ nife-extension/bin/
 # 客户端二进制走 GitHub Releases，不进 git
 client/nifetun-client
 client/nifetun-client.exe
+
+# 临时/构建垃圾
+.edge_local.py
+nuitka-crash-report.xml
+release/
