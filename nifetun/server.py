@@ -125,7 +125,7 @@ class ClientConn(MuxConn):
         self.edge.add_pending(uuid, self, label)
         self.write_frame(0, wire.CTRL, _encode({
             "type": "enroll_pending", "uuid": uuid, "client": uuid, "label": label,
-            "note": "等待管理员在 edge 上执行 /api/approve?client=" + uuid,
+            "note": "等待审批",
         }))
         # 批准前的兜底超时
         self._hs_timer = self._loop.call_later(self.edge.enroll_timeout, self.close)

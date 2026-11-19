@@ -200,7 +200,7 @@ class ServerConn(MuxConn):
             }))
             if not self.client.enrolled_note:
                 self.client.enrolled_note = True
-                log.info("已提交接入申请（%s），等待管理员批准…", self.client.label)
+                log.info("已提交接入申请（%s），等待审批", self.client.label)
             self._hs = self._loop.call_later(900, self.close)
 
     def _on_enroll_ok(self, msg: dict) -> None:
@@ -246,7 +246,7 @@ class ServerConn(MuxConn):
                 log.info("服务端分配的客户端 UUID: %s", uuid)
             if not self._pending_noted:
                 self._pending_noted = True
-                log.info("%s", msg.get("note") or "等待管理员批准")
+                log.info("%s", msg.get("note") or "等待审批")
         elif kind == "enroll_ok":
             self._on_enroll_ok(msg)
         elif kind == "challenge":

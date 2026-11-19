@@ -1,6 +1,6 @@
 {
   "name": "nifetun",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "nife 插件：把本机端口通过自建 nifetun 隧道暴露到公网（/tunnel up 8080）",
   "keywords": [
     "pi-package",

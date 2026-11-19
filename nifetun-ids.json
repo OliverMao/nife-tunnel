@@ -3,7 +3,7 @@
   "label": "DESKTOP-8NUBSCR",
   "tunnels": [
     {
-      "local": "127.0.0.1:2398",
+      "local": "127.0.0.1:2323",
       "id": "lap1"
     }
   ]

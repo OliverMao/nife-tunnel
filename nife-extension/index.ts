@@ -362,7 +362,7 @@ export default function (pi: ExtensionAPI) {
 					details: { name, urls, ...rec },
 				};
 			}
-			const pending = /等待管理员批准|等待管理员在 edge 上执行/.test(log);
+			const pending = /等待审批|等待管理员批准/.test(log);
 			ctx.ui.notify(pending ? "隧道等待审批" : "隧道没起来，看日志", pending ? "info" : "warning");
 			return {
 				content: [
