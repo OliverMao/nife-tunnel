@@ -119,10 +119,16 @@ export async function downloadBinary(): Promise<string> {
 		`https://github.com/${repo}/releases/latest/download/${asset}`,
 	].filter(Boolean);
 
+	// 私有仓库：先试 gh（用本机登录态），再试带 token 的直连，最后裸 URL
 	const errors: string[] = [];
+	const viaGh = ghDownload(`v${version}`, repo, asset, destDir);
+	if (viaGh) return viaGh;
+	const headers: Record<string, string> = {};
+	const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+	if (token) headers.Authorization = `Bearer ${token}`;
 	for (const url of urls) {
 		try {
-			const res = await fetch(url, { redirect: "follow" });
+			const res = await fetch(url, { redirect: "follow", headers });
 			if (!res.ok) throw new Error(`HTTP ${res.status}`);
 			const buf = new Uint8Array(await res.arrayBuffer());
 			if (buf.length < 1024 * 1024) throw new Error(`只有 ${buf.length}B`);
@@ -146,6 +152,33 @@ export async function downloadBinary(): Promise<string> {
 			errors.map((x) => `  ${x}`).join("\n") +
 			`\n  手动下载放到 ${dest}，或设 NIFETUN_CLIENT 指向已有二进制`,
 	);
+}
+
+/** 用 gh CLI 下 release 附件（私有仓库需要登录态）；成功返回文件路径 */
+function ghDownload(tag: string, repo: string, asset: string, destDir: string): string | null {
+	try {
+		const probe = spawnSync(process.platform === "win32" ? "where" : "which", ["gh"], { encoding: "utf8" });
+		if (probe.status !== 0) return null;
+		mkdirSync(destDir, { recursive: true });
+		const run = spawnSync("gh", ["release", "download", tag, "-R", repo, "-p", asset, "-D", destDir, "--clobber"], {
+			encoding: "utf8",
+		});
+		if (run.status !== 0) return null;
+		const got = join(destDir, asset);
+		if (!existsSync(got)) return null;
+		const buf = readFileSync(got);
+		if (buf.length < 1024 * 1024 || !magicOk(buf)) return null;
+		if (!IS_WIN) {
+			try {
+				chmodSync(got, 0o755);
+			} catch {
+				// 忽略
+			}
+		}
+		return got;
+	} catch {
+		return null;
+	}
 }
 
 async function ensureBinary(): Promise<string> {

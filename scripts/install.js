@@ -34,8 +34,30 @@ function magicOk(buf) {
 	return buf[0] === 0x7f && buf[1] === 0x45 && buf[2] === 0x4c && buf[3] === 0x46; // ELF
 }
 
+/** 用 gh CLI 从（可能是私有的）release 拉附件 */
+function ghDownload(tag, repo, asset, destDir) {
+	const { spawnSync } = require("node:child_process");
+	const which = spawnSync(process.platform === "win32" ? "where" : "which", ["gh"], { encoding: "utf8" });
+	if (which.status !== 0) return null;
+	const auth = spawnSync("gh", ["auth", "status"], { encoding: "utf8" });
+	if (auth.status !== 0) return null;
+	fs.mkdirSync(destDir, { recursive: true });
+	const args = ["release", "download", tag, "-R", repo, "-p", asset, "-D", destDir, "--clobber"];
+	const run = spawnSync("gh", args, { encoding: "utf8" });
+	if (run.status !== 0) return `gh release download 失败: ${(run.stderr || run.stdout || "").trim().slice(0, 200)}`;
+	const got = path.join(destDir, asset);
+	if (!fs.existsSync(got)) return `gh 没下到 ${asset}`;
+	const buf = fs.readFileSync(got);
+	if (buf.length < 1024 * 1024) return `gh 下到的文件太小（${buf.length}B）`;
+	if (!magicOk(buf)) return `gh 下到的文件头不对（平台不符？）`;
+	return { size: buf.length };
+}
+
 async function tryDownload(url) {
-	const res = await fetch(url, { redirect: "follow" });
+	const headers = {};
+	const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+	if (token) headers.Authorization = `Bearer ${token}`;
+	const res = await fetch(url, { redirect: "follow", headers });
 	if (!res.ok) throw new Error(`HTTP ${res.status} ${url}`);
 	const buf = Buffer.from(await res.arrayBuffer());
 	if (buf.length < 1024 * 1024) throw new Error(`文件太小（${buf.length}B），可能不是二进制: ${url}`);
@@ -62,6 +84,15 @@ async function main() {
 
 	const slug = repoSlug();
 	const asset = `nifetun-client-${PLAT}${EXT}`;
+
+	// 1) 私有仓库优先走 gh（用本机已登录的凭证）
+	const viaGh = ghDownload(`v${VERSION}`, slug, asset, DEST_DIR);
+	if (viaGh && typeof viaGh === "object") {
+		if (process.platform !== "win32") fs.chmodSync(DEST, 0o755);
+		console.log(`[nifetun] 已通过 gh 下载 ${PLAT} 客户端 ${(viaGh.size / 1024 / 1024).toFixed(1)} MB -> ${path.relative(ROOT, DEST)}`);
+		return;
+	}
+	if (typeof viaGh === "string") console.log(`[nifetun] ${viaGh}`);
 	const urls = [
 		process.env.NIFETUN_DOWNLOAD_BASE
 			? `${process.env.NIFETUN_DOWNLOAD_BASE.replace(/\/$/, "")}/${asset}`
@@ -88,7 +119,8 @@ async function main() {
 			"  三个办法任选其一：",
 			`    1) 手动下载放到 ${path.relative(ROOT, DEST)}`,
 			"    2) 设环境变量 NIFETUN_CLIENT 指向已有的 nifetun-client",
-			`    3) 设 NIFETUN_DOWNLOAD_BASE 指向你们自己的镜像目录再重跑：npm rebuild ${PKG.name}`,
+			"    3) 私有仓库：先 `gh auth login`（有登录态会自动用），或设 GITHUB_TOKEN",
+			`    4) 设 NIFETUN_DOWNLOAD_BASE 指向镜像目录再重跑：npm rebuild ${PKG.name}`,
 		].join(os.EOL),
 	);
 }
