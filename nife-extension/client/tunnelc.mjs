@@ -404,6 +404,8 @@ class Mux {
 				this.peerWindow = Number(msg.w) || this.peerWindow;
 				const assigned = msg.tunnels || [];
 				const changed = this.client.applyAssignment(assigned, msg.prefix, msg.public_hosts);
+				// 这条连接可能还没进 client.muxes（connect 未返回），单独补一次
+				this.client.rebuildKeys(this);
 				const ids = msg.ids || [];
 				const hosts = msg.hosts || [];
 				const denied = msg.denied || [];
@@ -625,10 +627,11 @@ class Client {
 				changed = true;
 			}
 		}
-		if (changed) {
-			for (const mux of this.muxes) this.rebuildKeys(mux);
-			this.store.saveIds(this.label);
-		}
+		// 每条连接都要按最新的 id 建表。几条连接是并发起来的，先建好的那些在拿到分配之前 byKey
+		// 是空的；只在 changed 时重建，就只有触发分配的那条连接能用，其余连接收到流转发请求会
+		// 认不出 id，全部“未知隧道”重置（线上表现：同一 URL 一半 520、一半 200）。
+		for (const mux of this.muxes) this.rebuildKeys(mux);
+		if (changed) this.store.saveIds(this.label);
 		return changed;
 	}
 

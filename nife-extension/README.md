@@ -25,16 +25,10 @@ nife list
 nife
 > /tunnel up 8080              # https://<域名>/t/<服务端分配的ID>/
 > /tunnel up 8080 5000         # 多个端口
-> /tunnel up 8080 --root       # 占域名根 → https://<域名>/（前端不用改）
 > /tunnel status
 > /tunnel down
 ```
 
-默认走 `/t/<id>/` 前缀，多个应用可以共用同一个域名。
-
-**`--root`**：把域名根整个交给这个应用，`/`、`/assets/…`、`/api/…` 这些根绝对路径原样到达应用 ——
-第三方前端（Vite 默认 `base: '/'`）不用改代码就能用。代价：同一时刻只能有一个 root 隧道，
-别的客户端来抢会被拒绝；用 `--root` 时多端口只有第一个占根。
 
 直接跟 nife 说也行（模型会调工具）：
 
@@ -47,6 +41,35 @@ nife
 | `tunnel_up` | `{tunnels: ["8080" 或 "127.0.0.1:8080"], server?}` → 返回公网 URL |
 | `tunnel_status` | 列出在跑的实例、PID、URL |
 | `tunnel_down` | 停掉（不传 name 全停） |
+
+## 给其它插件用（事件总线）
+
+其它 nife 插件不用去猜 `state.json`，直接走事件总线（nife-webui 就是这样把自己的端口挂上公网的）：
+
+```ts
+// 请求
+pi.events.emit("nifetun:request", { id, kind: "up", tunnels: ["127.0.0.1:5123"], server? })
+pi.events.emit("nifetun:request", { id, kind: "status" })
+pi.events.emit("nifetun:request", { id, kind: "down", name? })
+
+// 回复（同一条总线上，按 id 配对）
+pi.events.on("nifetun:reply", (reply) => {
+  // { id, ok, urls, entries: [{ url, local }], pending, tunnels, text, stopped, error }
+})
+```
+
+- `id` 由调用方生成，回复原样带回；没装本插件就没人回，自己设超时。
+- `up` 是**追加**：已经在跑的实例只把新端口写进它的配置文件（客户端热加载、在原连接上重新注册），
+  **不重启进程** —— 重启会把同一客户端上正在用的隧道全断一次（webui 发布一个服务端口时，页面那条
+  隧道就是这么被掐断的）。`down` 同理：改配置摘掉端口，最后一个端口摘完才关进程。
+- 配置文件在 `~/.nife/agent/nifetun/<name>.json`，`reload_interval: 1`。
+- 生命周期：`session_shutdown` 的 `reason === "quit"`（以及进程 `exit`）会关掉所有隧道；`/reload`、
+  `/new`、`/resume`、`/fork` 不动它们（进程还在、页面还开着）。下次 `session_start`（`reason ===
+  "startup"`）会清掉遗留的客户端——记录里存了拉起它的 nife `owner` pid，owner 还活着的（另一个
+  正在跑的 nife）不碰。
+- `entries` 把 URL 和本地地址对上（`-> 127.0.0.1:8080`），调用方靠 `local` 认出自己那条。
+- `pending: true` 表示在等邮件审批：客户端一连上就写了这句话，`up` 看到就直接返回，不等满 15s；
+  之后用 `status` 轮询即可，批准后 `entries` 里就会出现 URL。
 
 ## 包结构
 

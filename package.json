@@ -1,6 +1,6 @@
 {
   "name": "nifetun",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "nife 插件：把本机端口通过自建 nifetun 隧道暴露到公网（纯 Node，无需打包）",
   "keywords": [
     "pi-package",
