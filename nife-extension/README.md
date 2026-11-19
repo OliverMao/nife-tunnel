@@ -55,14 +55,6 @@ nife-extension/client/tunnelc.mjs   客户端（Node，零依赖，走 CDN 443 �
 - `nife-coding-agent` / `typebox` 是 `peerDependencies` 且标 `optional`：由 nife 提供，
   不让 npm 去装（私有 registry 上装不到也不会让安装失败）
 
-### 也可以不要 nife（可选）
-
-仓库里还有一份等价的 Python 客户端（`client/`，用了 Nuitka 打包成单文件），
-适合完全不想装 Node 的机器；它和 Node 版协议一致，走同一个 edge：
-
-```bash
-./scripts/pack-release.sh    # 把 client/ 的二进制整理成 Release 附件
-```
 
 ## 行为
 
@@ -84,7 +76,6 @@ nifetun-ids.json           隧道 ID（重启后 URL 不变）
 
 | 现象 | 处理 |
 |---|---|
-| `找不到 nifetun-client` | 确认 `bin/<平台>-<架构>/` 下有二进制，或设 `NIFETUN_CLIENT` |
-| `spawn UNKNOWN` / 立即退出 | 二进制不是本平台的（比如把 Linux ELF 命名成 .exe），换对的 |
+| `找不到客户端脚本` | 设 `NIFETUN_CLIENT` 指向 `client/tunnelc.mjs` |
 | 一直"等待审批" | 看邮箱；或管理员 `curl -X POST -H "Authorization: Bearer <token>" 'http://127.0.0.1:9444/api/approve?client=<uuid>'` |
 | 换了服务器 | 删掉 `nifetun-credentials.json` 重新审批 |

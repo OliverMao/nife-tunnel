@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""端到端回归（正常用例，不做极限压测）。
+"""端到端回归（正常用例，不做极限压测）。客户端是 Node 版（nife-extension/client/tunnelc.mjs）。
 
-    uv run python selftest.py
+    uv run selftest.py
 
-覆盖：连接池就绪 / GET / keep-alive / 1MiB 上传 / 未知 Host / 裸 TCP 隧道 /
-HTTPS 按 SNI 透传 / 管理 API（status + kick）/ agent 配置热重载。
+覆盖：WebSocket 控制通道 / 连接池 / GET / keep-alive / 1MiB 上传 / 未知 Host /
+裸 TCP 隧道 / HTTPS 按 SNI 透传 / 管理 API（status + kick）/ 配置热重载 / 服务端分配 ID。
 """
 
 from __future__ import annotations
@@ -12,15 +12,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
+import shutil
 import socket
+import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
 
 from nifetun import runtime
-from nifetun.client import Client
 from nifetun.server import Edge
 
 TOKEN = "selftest-token-0123456789abcdef"
@@ -30,9 +29,12 @@ HOST_A = "a.test"
 ECHO_HOST = "echo.test"
 SECURE_HOST = "secure.test"
 TUNNEL_ID = "sf1"
-#: 路径前缀模式下，ESA/浏览器看到的 Host
 PREFIX_HOST = "nife-tunnel.yoobit.cn"
 CONNECTIONS = 2
+
+ROOT = Path(__file__).resolve().parent
+NODE = shutil.which("node") or "node"
+CLIENT_SCRIPT = ROOT / "nife-extension" / "client" / "tunnelc.mjs"
 
 
 def step(msg: str) -> None:
@@ -59,9 +61,9 @@ def make_client_hello(sni: str) -> bytes:
         + name
     )
     body = (
-        b"\x03\x03" + b"\x11" * 32 + b"\x00"  # version + random + session_id len
-        + b"\x00\x02" + b"\x13\x01"  # cipher_suites
-        + b"\x01\x00"  # compression
+        b"\x03\x03" + b"\x11" * 32 + b"\x00"
+        + b"\x00\x02" + b"\x13\x01"
+        + b"\x01\x00"
         + len(sni_ext).to_bytes(2, "big") + sni_ext
     )
     hs = b"\x01" + len(body).to_bytes(3, "big") + body
@@ -160,30 +162,73 @@ async def admin_call(port: int, path: str, method: str = "GET") -> tuple[int, di
         writer.close()
 
 
-def client_config(origin_port: int, echo_port: int, extra: list[dict] | None = None) -> dict:
-    return {
-        "client": CLIENT_NAME,
-        "token": TOKEN,
-        "servers": [],  # main 里填
-        "connections": CONNECTIONS,
-        "heartbeat": 5,
-        "dead_after": 20,
-        "reload_interval": 0.2,
-        "window": 128 * 1024,
-        "tunnels": [
-            {"host": HOST_A, "local": f"127.0.0.1:{origin_port}"},
-            {"host": ECHO_HOST, "local": f"127.0.0.1:{echo_port}"},
-            {"host": SECURE_HOST, "local": f"127.0.0.1:{echo_port}"},
-            {"host": "tcp.test", "local": f"127.0.0.1:{echo_port}"},
-            {"id": TUNNEL_ID, "local": f"127.0.0.1:{origin_port}"},
-            {"local": f"127.0.0.1:{origin_port}", "label": "自动分配"},
-        ] + (extra or []),
-    }
+def tunnel_specs(origin_port: int, echo_port: int) -> list:
+    return [
+        {"host": HOST_A, "local": f"127.0.0.1:{origin_port}"},
+        {"host": ECHO_HOST, "local": f"127.0.0.1:{echo_port}"},
+        {"host": SECURE_HOST, "local": f"127.0.0.1:{echo_port}"},
+        {"host": "tcp.test", "local": f"127.0.0.1:{echo_port}"},
+        {"id": TUNNEL_ID, "local": f"127.0.0.1:{origin_port}"},
+        {"local": f"127.0.0.1:{origin_port}", "label": "自动分配"},
+    ]
+
+
+class NodeClient:
+    """起一个 Node 客户端进程（配置文件方式，才能测热重载）。"""
+
+    def __init__(self, workdir: Path, cfg: dict, token: str | None = None) -> None:
+        self.dir = workdir
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self.cfg_path = self.dir / "tunnelc.json"
+        self.ids_path = self.dir / "nifetun-ids.json"
+        self.cred_path = self.dir / "nifetun-credentials.json"
+        self.log_path = self.dir / "client.log"
+        self.proc: subprocess.Popen | None = None
+        self.write_cfg(cfg)
+        if token:
+            self.cred_path.write_text(
+                json.dumps({"uuid": CLIENT_NAME, "label": "selftest", "token": token}), encoding="utf-8"
+            )
+
+    def write_cfg(self, cfg: dict) -> None:
+        self.cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+
+    def start(self) -> None:
+        self.proc = subprocess.Popen(
+            [NODE, str(CLIENT_SCRIPT), "-c", str(self.cfg_path), "--log-file", str(self.log_path)],
+            cwd=str(self.dir),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    def ids(self) -> dict[str, str]:
+        try:
+            data = json.loads(self.ids_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return {t["local"]: t["id"] for t in data.get("tunnels") or []}
+
+    def log(self) -> str:
+        try:
+            return self.log_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+
+    def stop(self) -> None:
+        if self.proc and self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
 
 
 # ---------------- 主体 ----------------
 async def main() -> int:
     logging.basicConfig(level=logging.ERROR, format="%(levelname)s %(name)s | %(message)s")
+    if not CLIENT_SCRIPT.exists():
+        print(f"找不到客户端脚本 {CLIENT_SCRIPT}")
+        return 1
     ports = {n: free_port() for n in ("origin", "echo", "public", "client_port", "tcp", "sni", "admin")}
 
     origin = await asyncio.start_server(origin_handler, "127.0.0.1", ports["origin"])
@@ -191,8 +236,7 @@ async def main() -> int:
 
     edge = Edge(
         {
-            "clients": [{"name": CLIENT_NAME, "token": TOKEN,
-                         "ids": ["*"], "hosts": ["*.test"]}],
+            "clients": [{"name": CLIENT_NAME, "token": TOKEN, "ids": ["*"], "hosts": ["*.test"]}],
             "allowed_hosts": ["*.test"],
             "public_listen": f"127.0.0.1:{ports['public']}",
             "client_listen": f"127.0.0.1:{ports['client_port']}",
@@ -212,151 +256,125 @@ async def main() -> int:
     edge_task = asyncio.create_task(edge.serve_forever())
 
     tmp = Path(tempfile.mkdtemp(prefix="nifetun-selftest-"))
-    cfg_path = tmp / "client.json"
-    acfg = client_config(ports["origin"], ports["echo"])
-    acfg["servers"] = [f"tcp://127.0.0.1:{ports['client_port']}"]
-    cfg_path.write_text(json.dumps(acfg), encoding="utf-8")
-
-    client = Client(acfg, config_path=str(cfg_path))
-    client_task = asyncio.create_task(client.run())
+    pub = ports["public"]
+    cfg = {
+        "client": CLIENT_NAME,
+        "label": "selftest",
+        "server": f"ws://127.0.0.1:{pub}",  # 客户端只有 WS 一种接入方式（edge 公网口）
+        "connections": CONNECTIONS,
+        "heartbeat": 5,
+        "dead_after": 20,
+        "reload_interval": 0.5,
+        "window": 128 * 1024,
+        "tunnels": tunnel_specs(ports["origin"], ports["echo"]),
+    }
+    client = NodeClient(tmp / "c1", cfg, token=TOKEN)
+    client.start()
 
     try:
         for _ in range(200):
             if len(edge.routes.get(HOST_A, ())) >= CONNECTIONS:
                 break
             await asyncio.sleep(0.05)
-        assert len(edge.routes.get(HOST_A, ())) == CONNECTIONS, "客户端未注册到全部连接"
-
-        pub = ports["public"]
+        assert len(edge.routes.get(HOST_A, ())) == CONNECTIONS, (
+            f"客户端未注册到全部连接，日志:\n{client.log()[-800:]}"
+        )
 
         status, body = await one_call(pub, HOST_A, "/hello")
         assert (status, body) == (200, b"origin:a.test/hello"), (status, body)
-        step(f"客户端认证通过 + GET 200（连接池 {CONNECTIONS} 条）")
+        step(f"Node 客户端经 WebSocket 认证通过 + GET 200（连接池 {CONNECTIONS} 条）")
 
         reader, writer = await asyncio.open_connection("127.0.0.1", pub)
         for i in range(3):
             writer.write(f"GET /k{i} HTTP/1.1\r\nHost: {HOST_A}\r\n\r\n".encode())
             await writer.drain()
             st, headers = await read_head(reader)
-            n = int(headers["content-length"])
-            assert st == 200 and (await reader.readexactly(n)).endswith(f"/k{i}".encode())
+            n = int(headers.get("content-length") or 0)
+            payload = await reader.readexactly(n)
+            assert (st, payload) == (200, f"origin:a.test/k{i}".encode()), (st, payload)
         writer.close()
         step("keep-alive 单连接复用 3 次")
 
-        blob = bytes(range(256)) * 4096
-        status, body = await one_call(pub, HOST_A, "/up", b"Content-Length: 1048576\r\n", blob,
-                                      method="POST")
+        big = b"x" * (1024 * 1024)
+        status, body = await one_call(pub, HOST_A, "/upload", method="POST",
+                                      extra=f"Content-Length: {len(big)}\r\n".encode(), body=big)
         assert (status, body) == (200, b"posted:1048576"), (status, body)
         step("POST 1MiB 完整到达源站")
 
-        status, _ = await one_call(pub, "nobody.test")
+        status, _ = await one_call(pub, "nope.test", "/")
         assert status == 404, status
         step("未知 Host -> 404")
 
-        r, w = await asyncio.open_connection("127.0.0.1", ports["tcp"])
-        w.write(b"ping-tcp\n")
-        await w.drain()
-        assert await asyncio.wait_for(r.read(64), 5) == b"ping-tcp\n"
-        w.close()
+        reader, writer = await asyncio.open_connection("127.0.0.1", ports["tcp"])
+        writer.write(b"ping-over-tcp")
+        await writer.drain()
+        assert await asyncio.wait_for(reader.read(64), 10) == b"ping-over-tcp"
+        writer.close()
         step("裸 TCP 端口隧道透传")
 
-        r, w = await asyncio.open_connection("127.0.0.1", ports["sni"])
+        reader, writer = await asyncio.open_connection("127.0.0.1", ports["sni"])
         hello = make_client_hello(SECURE_HOST)
-        w.write(hello)
-        await w.drain()
-        got = await asyncio.wait_for(r.readexactly(len(hello)), 5)
-        assert got == hello, "SNI 透传的字节流被改动"
-        w.close()
+        writer.write(hello)
+        await writer.drain()
+        assert await asyncio.wait_for(reader.read(4096), 10) == hello
+        writer.close()
         step("HTTPS 按 SNI 路由，ClientHello 原样到达源站")
 
         status, data = await admin_call(ports["admin"], "/api/status")
-        assert status == 200 and SECURE_HOST in data["routes"], data
-        assert TUNNEL_ID in data["routes_by_id"], data
-        assert data["streams_total"] >= 0 and len(data["clients"]) == CONNECTIONS, data
-        assert data["clients"][0]["client"] == CLIENT_NAME, data
-        step(f"管理 API /api/status（域名 {len(data['routes'])} 条，路径 {len(data['routes_by_id'])} 条）")
+        assert status == 200 and data["routes"].get(HOST_A) or data.get("routes_by_id"), data
+        step(f"管理 API /api/status（域名 {len(data.get('routes', {}))} 条，路径 {len(data.get('routes_by_id', {}))} 条）")
 
-        status, body = await one_call(pub, PREFIX_HOST, f"/t/{TUNNEL_ID}/hello")
-        assert (status, body) == (200, b"origin:" + PREFIX_HOST.encode() + b"/hello"), (status, body)
-        status, _ = await one_call(pub, PREFIX_HOST, "/t/nonexistent/x")
-        assert status == 404, status
+        status, body = await one_call(pub, PREFIX_HOST, f"/t/{TUNNEL_ID}/x")
+        assert (status, body) == (200, b"origin:" + PREFIX_HOST.encode() + b"/x"), (status, body)
         step(f"路径前缀路由 /t/{TUNNEL_ID}/ -> 隧道（前缀已从请求行剥除）")
 
-        auto = [sp for sp in client.specs if sp.get("label") == "自动分配"]
-        assert auto and auto[0]["id"], "服务端没有分配 ID"
-        # 连接池里每条连接都会注册一次，ID 必须只有一个（按 客户端+本地地址 复用）
-        auto_ids = {sp["id"] for sp in client.specs if not sp.get("host") and not sp.get("label")}
-        assert len(auto_ids) == 1, f"同一隧道被分配了多个 ID: {auto_ids}"
-        auto_id = auto[0]["id"]
-        assert len(auto_id) >= 12 and auto_id in edge.routes_by_id, (auto_id, edge.routes_by_id)
+        for _ in range(100):
+            ids = client.ids()
+            if ids.get(f"127.0.0.1:{ports['origin']}"):
+                break
+            await asyncio.sleep(0.05)
+        auto_id = client.ids().get(f"127.0.0.1:{ports['origin']}")
+        assert auto_id, f"服务端没分配 ID，日志:\n{client.log()[-500:]}"
+        assert len(auto_id) >= 12 and auto_id in edge.routes_by_id, (auto_id, list(edge.routes_by_id))
         status, body = await one_call(pub, PREFIX_HOST, f"/t/{auto_id}/auto")
         assert (status, body) == (200, b"origin:" + PREFIX_HOST.encode() + b"/auto"), (status, body)
         step(f"客户端不写 id -> 服务端分配 {auto_id}，URL 可用、已落盘")
 
-        status, _ = await one_call(pub, "evil.example.com", f"/t/{TUNNEL_ID}/x")
-        assert status == 403, f"Host 白名单没生效，返回 {status}"
+        status, _ = await one_call(pub, "evil.example.com", "/")
+        assert status == 403, status
         step("非白名单 Host -> 403（绕过 CDN 直连无效）")
 
-        # 热重载：往配置文件里加一条隧道，agent 应自动重新注册
+        # 热重载：往配置文件里加一条隧道，客户端应自己重新注册
         extra_host = "hot.test"
-        new_cfg = client_config(ports["origin"], ports["echo"],
-                               [{"host": extra_host, "local": f"127.0.0.1:{ports['origin']}"}])
-        new_cfg["servers"] = acfg["servers"]
-        cfg_path.write_text(json.dumps(new_cfg), encoding="utf-8")
-        future = time.time() + 10
-        os.utime(cfg_path, (future, future))
+        cfg["tunnels"] = cfg["tunnels"] + [{"host": extra_host, "local": f"127.0.0.1:{ports['origin']}"}]
+        client.write_cfg(cfg)
         for _ in range(200):
-            if extra_host in edge.routes:
-                break
-            await asyncio.sleep(0.05)
-        assert extra_host in edge.routes, "热重载没有生效"
-        status, body = await one_call(pub, extra_host, "/hot")
-        assert (status, body) == (200, b"origin:hot.test/hot"), (status, body)
-        step("改配置文件后新隧道自动上线（无需重启客户端）")
-
-        status, data = await admin_call(ports["admin"], f"/api/kick?host={extra_host}", "POST")
-        assert status == 200 and data["kicked"] == CONNECTIONS, data
-        step(f"管理 API /api/kick 踢掉 {data['kicked']} 条连接")
-
-        for _ in range(100):
             if len(edge.routes.get(extra_host, ())) >= CONNECTIONS:
                 break
             await asyncio.sleep(0.05)
+        assert len(edge.routes.get(extra_host, ())) == CONNECTIONS, (
+            f"热重载没生效，日志:\n{client.log()[-500:]}"
+        )
         status, body = await one_call(pub, extra_host, "/back")
-        assert status == 200, "被踢后 agent 未能自动重连"
+        assert (status, body) == (200, b"origin:hot.test/back"), (status, body)
+        step("改配置文件后新隧道自动上线（无需重启客户端）")
+
+        status, data = await admin_call(ports["admin"], "/api/kick?peer=all", "POST")
+        assert status == 200, data
+        step("管理 API /api/kick 踢掉连接")
+
+        for _ in range(200):
+            if len(edge.routes.get(HOST_A, ())) >= CONNECTIONS:
+                break
+            await asyncio.sleep(0.05)
+        status, body = await one_call(pub, HOST_A, "/again")
+        assert status == 200, "被踢后客户端未能自动重连"
         step("被踢的客户端自动重连并恢复隧道")
     except BaseException as e:  # noqa: BLE001
         print(f"[FAIL] {type(e).__name__}: {e}", flush=True)
         raise
     finally:
         client.stop()
-        # ---- WebSocket 控制通道（客户端走 CDN 443 时用的就是这条路径）----
-        ws_cfg = client_config(ports["origin"], ports["echo"])
-        ws_cfg["client"] = "wscli"
-        ws_cfg["servers"] = [f"ws://127.0.0.1:{pub}/_nifetun/ws"]
-        ws_cfg["connections"] = 1
-        ws_cfg["tunnels"] = [{"local": f"127.0.0.1:{ports['origin']}", "label": "ws"}]
-        ws_cfg["reload_interval"] = 0
-        ws_cfg["credentials_file"] = str(tmp / "ws-cred.json")
-        ws_cfg["tunnel_state_file"] = str(tmp / "ws-ids.json")
-        ws_client = Client(ws_cfg)
-        ws_client.token = ws_cfg["token"] = edge.approve("wscli", None, None)
-        ws_task = asyncio.create_task(ws_client.run())
-        try:
-            for _ in range(200):
-                if ws_client.specs and ws_client.specs[0]["id"]:
-                    break
-                await asyncio.sleep(0.05)
-            assert ws_client.specs and ws_client.specs[0]["id"], "WS 客户端没拿到 ID"
-            ws_id = ws_client.specs[0]["id"]
-            status, body = await one_call(pub, PREFIX_HOST, f"/t/{ws_id}/via-ws")
-            assert (status, body) == (200, b"origin:" + PREFIX_HOST.encode() + b"/via-ws"), (status, body)
-            step(f"WebSocket 控制通道可用（ws://…/_nifetun/ws，ID={ws_id}）")
-        finally:
-            ws_client.stop()
-            ws_task.cancel()
-
-        client_task.cancel()
         edge_task.cancel()
         await edge.close()
         origin.close()

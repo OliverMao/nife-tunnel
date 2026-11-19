@@ -23,14 +23,14 @@
 | | 需要什么 |
 |---|---|
 | **服务端**（公网机器） | 整个仓库，`uv sync` 装依赖（uvloop/msgspec 提速），跑 `tunneld.py` |
-| **客户端**（内网机器） | **两个文件**：`client/nifetun-client.exe`（Win x64）或 `client/nifetun-client`（Linux x64）+ `tunnelc.json`。**单文件二进制，不需要 Python、不需要任何依赖** |
+| **客户端**（内网机器） | Node 脚本 `nife-extension/client/tunnelc.mjs`，零第三方依赖；用 nife 插件一行命令装上 |
 
 ```bash
 uv run python build.py        # 在开发机上打包
 ```
 
 ```
-dist/tunnelc.py    37 KB   单文件 客户端，只 import 标准库（json/asyncio/ssl/struct…）
+nife-extension/client/tunnelc.mjs   Node 客户端（零依赖，走 CDN 443 的 WebSocket）
 dist/tunneld.py    50 KB   单文件 edge，装了 uvloop/msgspec 会自动用上
 ```
 
@@ -38,7 +38,7 @@ dist/tunneld.py    50 KB   单文件 edge，装了 uvloop/msgspec 会自动用�
 只包含它真用到的 8 个模块。拷到内网机器后：
 
 ```bash
-python tunnelc.py -c tunnelc.json        # 任意 Python 3.10+，零依赖
+/tunnel up 8080                          # 装了 nife 插件就这么用
 ```
 
 > 也可以用单文件 `dist/tunneld.py` 部署 edge（Docker 镜像很小、或者不想在服务器上放源码时用），
@@ -65,11 +65,11 @@ uv run tunneld.py --gen-token
 uv run tunneld.py -c tunneld.json
 
 # 2. 内网机器：tunnelc.json 就写两行（见下），启动 → 自动发审批邮件
-uv run tunnelc.py -c tunnelc.json
+nife   # 然后 /tunnel up 8080
 
 # 3. 端到端自测（14 项断言）+ 性能基准
 uv run selftest.py
-uv run bench.py --conns 4 --size 64
+
 ```
 
 ## 部署拓扑
@@ -143,7 +143,7 @@ stream {
 "connections": 4
 ```
 
-`uv run python bench.py --edge-procs 2` 就是这套拓扑的本地验证。
+`selftest.py` 里的多通道用例就是这套拓扑的本地验证。
 
 ### D. 裸 TCP 隧道
 
@@ -272,7 +272,7 @@ keep-alive 小请求        ~800 req/s
 ```
 
 即隧道本身大约带来 2 倍开销（多一次进程内拷贝 + 帧处理），单流能跑到直连的一半左右。
-**生产在 Linux + uvloop 上会明显更好**，请直接在服务器上跑 `bench.py` 取你自己的数字。
+**生产在 Linux + uvloop 上会明显更好**，请在服务器上自测。
 
 ## 协议
 
@@ -435,7 +435,7 @@ curl -X POST -H "Authorization: Bearer <admin_token>" \
 ```bash
 uv run selftest.py         # 14 项：路由/前缀/TCP/SNI/上传/热重载/踢线重连/WS 通道/服务端分配 ID
 uv run selftest_enroll.py  # 6 项：邮件审批全流程
-uv run bench.py            # 四个进程的吞吐/延迟基准
+
 ```
 
 ## 目录
@@ -453,7 +453,7 @@ nifetun/
   admin.py       管理 API
   notify.py      邮件审批（smtplib）
   config.py / jsonx.py / util.py / runtime.py   配置、JSON、杂项、事件循环
-tunneld.py / tunnelc.py     两个入口
+tunneld.py                  edge 入口
 build.py / build_bins.py    单文件 .py 打包 / Nuitka 二进制造
 deploy/                     服务器 systemd unit + 运维脚本 + 配置模板
 client/                     客户端二进制 + 配置 + 使用说明
@@ -465,4 +465,4 @@ tools/esa_setup.py          阿里云 ESA 加速域名 / 回源规则（幂等�
 - 一个公网连接 = 一条流，HTTP/1.1 keep-alive 能复用，但 WebSocket/SSE 会占住一条连接（连接池可缓解）。
 - 不支持 UDP / HTTP/3 回源；QUIC 隧道做过又删了（纯 Python 逐包加密比内核 TLS 慢）。
 - 亚洲节点加速的域名必须已备案（子域继承主域名）。
-- 客户端只支持 Windows x64 / Linux x64 的预编译产物；其它平台用 `uv run tunnelc.py` 跑源码。
+- 客户端需要 Node（nife 本身就是 Node 应用，装了 nife 就有）。

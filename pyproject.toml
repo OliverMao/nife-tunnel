@@ -12,9 +12,6 @@ dependencies = [
 package = false
 
 [dependency-groups]
-build = [
-    "nuitka>=4.3.5",
-]
 setup = [
     "alibabacloud-alidns20150109>=4.6.1",
     "alibabacloud-esa20240910>=3.17.2",

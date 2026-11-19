@@ -535,8 +535,9 @@ function u32(n) {
 
 // ---------------- 客户端主体 ----------------
 class Client {
-	constructor(cfg, cwd) {
+	constructor(cfg, cwd, configPath = null) {
 		this.cfg = cfg;
+		this.configPath = configPath;
 		this.store = new Store(cfg, cwd);
 		this.label = String(cfg.label || this.store.cred.label || hostname());
 		this.specs = parseTunnels(cfg);
@@ -549,7 +550,38 @@ class Client {
 		this.muxes = new Set();
 		this.enrollClaim = 0;
 		this.stopping = false;
+		this.reloadEvery = Number(cfg.reload_interval ?? 5);
+		this.lastMtime = this.configPath ? mtime(this.configPath) : null;
 		this.applyStoredIds();
+	}
+
+	/** 配置文件变了就重新注册（新增/删除隧道不用重启） */
+	watchConfig() {
+		if (!this.configPath || !(this.reloadEvery > 0)) return;
+		const timer = setInterval(() => {
+			const now = mtime(this.configPath);
+			if (now === this.lastMtime) return;
+			this.lastMtime = now;
+			try {
+				const cfg = JSON.parse(readFileSync(this.configPath, "utf8"));
+				for (const k of Object.keys(cfg)) if (k.startsWith("_")) delete cfg[k];
+				const specs = parseTunnels(cfg);
+				const shape = (list) => list.map((x) => `${x.local}|${x.host || ""}`).sort().join(",");
+				if (shape(specs) === shape(this.specs)) return;
+				const known = new Map(this.specs.map((sp) => [sp.local, sp.id]));
+				for (const sp of specs) if (!sp.id && !sp.host && known.get(sp.local)) sp.id = known.get(sp.local);
+				this.specs = specs;
+				this.applyStoredIds();
+				for (const mux of this.muxes) {
+					this.rebuildKeys(mux);
+					mux.register(this.tunnelPayload());
+				}
+				info(`配置已变更，重新注册 ${this.specs.length} 条隧道`);
+			} catch (e) {
+				error(`重载配置失败（保留旧的）: ${e.message}`);
+			}
+		}, Math.max(500, this.reloadEvery * 1000));
+		timer.unref?.();
 	}
 
 	applyStoredIds() {
@@ -621,6 +653,8 @@ class Client {
 				this.servers.map((s) => s.url).join(", ") +
 				`，${this.specs.length} 条隧道`,
 		);
+		this.watchConfig();
+		if (this.configPath && this.reloadEvery > 0) info(`配置热重载：每 ${this.reloadEvery}s 检查 ${this.configPath}`);
 		await Promise.all([...Array(this.connections).keys()].map((i) => this.slot(i)));
 	}
 
@@ -717,6 +751,14 @@ function hostname() {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+function mtime(path) {
+	try {
+		return statSync(path).mtimeMs;
+	} catch {
+		return null;
+	}
+}
+
 // ---------------- 入口 ----------------
 async function main() {
 	let parsed;
@@ -739,7 +781,7 @@ async function main() {
 		}
 	}
 
-	const client = new Client(cfg, process.cwd());
+	const client = new Client(cfg, process.cwd(), args.json == null ? args.config || "tunnelc.json" : null);
 	for (const fn of ["SIGINT", "SIGTERM"]) process.on(fn, () => (client.stop(), process.exit(0)));
 	await client.run();
 }

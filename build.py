@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
-"""打包：把 edge / agent 各自打成一个自包含的单文件。
+"""打包：把 edge 打成一个自包含的单文件（客户端是 Node 的，见 nife-extension/client/）。
 
     uv run python build.py
 
 产物：
-    dist/tunnelc.py   单文件 agent。**零第三方依赖**，只需要 Python 3.10+，
-                      直接拷到内网机器上 `python tunnelc.py -c tunnelc.json` 就能跑。
     dist/tunneld.py   单文件 edge。装了 uvloop / msgspec 会自动用上（没装也能跑）。
 
 原理：从入口脚本出发做一次 import 图遍历，只收集真正用到的模块，
 把 `from .x import y` 改写成绝对导入，再依次 exec 进内存里的 `nifetun` 包。
-所以客户端产物里不会有 server.py / admin.py / sni.py。
+所以产物里不含 sni.py 之类没被用到的模块。
 """
 
 from __future__ import annotations
@@ -135,21 +133,15 @@ def build(entry: str, roots: list[str], title: str, usage: str) -> Path:
 
 def main() -> int:
     build(
-        "tunnelc.py",
-        ["config", "runtime", "client"],
-        "nifetun agent（单文件，零第三方依赖）",
-        "用法:  python tunnelc.py -c tunnelc.json",
-    )
-    build(
         "tunneld.py",
         ["config", "runtime", "server"],
         "nifetun edge（单文件；装 uvloop/msgspec 会自动加速）",
         "用法:  python tunneld.py -c tunneld.json",
     )
-    # 顺手把最小配置样例放进去，拷客户端时只用拿两个文件
-    for name in ("tunnelc.example.json", "tunneld.example.json"):
-        (DIST / name).write_text((ROOT / name).read_text(encoding="utf-8"), encoding="utf-8")
-    print(f"dist/ 就绪：客户端只需 dist/tunnelc.py + dist/tunnelc.example.json")
+    (DIST / "tunneld.example.json").write_text(
+        (ROOT / "tunneld.example.json").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    print("dist/ 就绪：dist/tunneld.py + dist/tunneld.example.json")
     return 0
 
 

@@ -17,25 +17,19 @@ uv run tunneld.py -c tunneld.json
 
 ## 装客户端
 
-配置就两个字段：
-
-```json
-{
-  "server": "https://nife-tunnel.yoobit.cn",
-  "tunnels": ["127.0.0.1:8080"]
-}
-```
+客户端是 Node 的，就在 nife 插件里（`nife-extension/client/tunnelc.mjs`）：
 
 ```bash
-./nifetun-client -c tunnelc.json
-# 或者不写文件：
-./nifetun-client --json '{"server":"https://nife-tunnel.yoobit.cn","tunnels":["127.0.0.1:8080"]}'
+nife install git:github.com/OliverMao/nife-tunnel@v0.3.0
 ```
 
-- 首次启动发**审批邮件**，点「批准接入」就上线，token 自动落盘
-- 隧道 ID 服务端分配，日志里直接给完整 URL，重启不变
-- 加服务就往 `tunnels` 加一行，**5 秒生效**，服务器不用动
-- TLS / token / 名字 / 端口全都不用配
+```
+/tunnel up 8080        # 本机 8080 → https://nife-tunnel.yoobit.cn/t/xxxx/
+/tunnel status
+/tunnel down
+```
+
+首次在新机器上会发审批邮件，点「批准接入」后自动上线；隧道 ID 服务端分配，重启后 URL 不变。
 
 ## 运维
 
@@ -74,9 +68,8 @@ nife install git:github.com/OliverMao/nife-tunnel@v0.2.0
 ## 测试
 
 ```bash
-uv run selftest.py         # 14 项端到端
-uv run selftest_enroll.py  # 审批流程 6 项
-uv run bench.py --conns 4 --size 64
+uv run selftest.py         # 13 项端到端（驱动 Node 客户端）
+uv run selftest_enroll.py  # 审批流程 7 项
 ```
 
 ---
