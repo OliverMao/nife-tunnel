@@ -22,3 +22,5 @@ client/nifetun-client.exe
 .edge_local.py
 nuitka-crash-report.xml
 release/
+nifetun-ids.json
+nifetun-credentials.json
