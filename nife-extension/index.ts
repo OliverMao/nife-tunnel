@@ -180,6 +180,24 @@ async function up(server: string, tunnels: string[], root = false) {
 }
 
 export default function (pi: ExtensionAPI) {
+	/** 刷新底部状态：没有活隧道就清掉（setStatus 传 undefined） */
+	function refreshStatus(ctx: { ui: { setStatus: (key: string, text: string | undefined) => void } }): void {
+		const state = loadState();
+		const live = Object.entries(state.tunnels).filter(([, r]) => alive(r.pid));
+		if (!live.length) {
+			ctx.ui.setStatus("nifetun", undefined);
+			return;
+		}
+		// 只留一段短标记：⚡ /t/ab12cd 或 ⚡ 3 条
+		const urls = live.flatMap(([, r]) => parseUrls(r.log));
+		const tags = urls.map((u) => {
+			const m = u.match(/\/t\/([^/]+)\/?$/);
+			return m ? `/t/${m[1].slice(0, 6)}` : u.replace(/^https?:\/\//, "");
+		});
+		const text = tags.length ? `⚡ ${tags.join(" ")}` : `⚡ ${live.length} 条`;
+		ctx.ui.setStatus("nifetun", text);
+	}
+
 	function statusAll(): string {
 		const state = loadState();
 		const names = Object.keys(state.tunnels);
@@ -223,6 +241,7 @@ export default function (pi: ExtensionAPI) {
 			if (!tunnels.length) throw new Error("至少要给一个本地端口");
 
 			const { name, rec, urls, log, pending } = await up(server, tunnels, !!params.root);
+			refreshStatus(ctx);
 			if (urls.length) ctx.ui.notify(`隧道已上线: ${urls.join(" ")}`, "success");
 			else ctx.ui.notify(pending ? "隧道等待审批" : "隧道没起来，看日志", pending ? "info" : "warning");
 
@@ -252,6 +271,7 @@ export default function (pi: ExtensionAPI) {
 		parameters: Type.Object({ name: Type.Optional(Type.String({ description: "tunnel_up 返回的实例名" })) }),
 		async execute(_id, params, _s, _u, ctx) {
 			const done = downAll(params.name);
+			refreshStatus(ctx);
 			ctx.ui.notify(done.length ? `已停止 ${done.join(", ")}` : "没有在跑的隧道", "info");
 			return {
 				content: [{ type: "text", text: done.length ? `已停止: ${done.join(", ")}` : "没有在跑的隧道" }],
@@ -268,6 +288,7 @@ export default function (pi: ExtensionAPI) {
 			if (sub === "status") return ctx.ui.notify(statusAll(), "info");
 			if (sub === "down") {
 				const done = downAll(parts[1]);
+				refreshStatus(ctx);
 				return ctx.ui.notify(done.length ? `已停止 ${done.join(", ")}` : "没有在跑的隧道", "info");
 			}
 			if (sub === "up" || sub === "start") {
@@ -282,6 +303,7 @@ export default function (pi: ExtensionAPI) {
 					tunnels,
 					wantRoot,
 				);
+				refreshStatus(ctx);
 				if (urls.length) return ctx.ui.notify(`已上线:\n${urls.join("\n")}`, "success");
 				return ctx.ui.notify(
 					pending ? "等待审批：点邮件里的「批准接入」后会自动上线" : `没拿到 URL。日志:\n${tail(log ? "" : "", 6) || log}`,
@@ -294,10 +316,16 @@ export default function (pi: ExtensionAPI) {
 
 	// 打开 nife 时把现状放进状态栏
 	pi.on("session_start", async (_event, ctx) => {
+		// 顺手清掉已退出的实例，并把状态栏同步成真实情况（没隧道就清空）
 		const state = loadState();
-		const live = Object.entries(state.tunnels).filter(([, r]) => alive(r.pid));
-		if (!live.length) return;
-		const urls = live.flatMap(([, r]) => parseUrls(r.log));
-		ctx.ui.setStatus("nifetun", `隧道 ${live.length} 条${urls.length ? ` · ${urls[0]}` : ""}`);
+		let changed = false;
+		for (const [name, rec] of Object.entries(state.tunnels)) {
+			if (!alive(rec.pid)) {
+				delete state.tunnels[name];
+				changed = true;
+			}
+		}
+		if (changed) saveState(state);
+		refreshStatus(ctx);
 	});
 }
