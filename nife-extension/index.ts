@@ -110,7 +110,7 @@ function killTree(pid: number): void {
 	}
 }
 
-function startTunnel(server: string, tunnels: string[], root = true): { name: string; rec: TunnelRec } {
+function startTunnel(server: string, tunnels: string[], root = false): { name: string; rec: TunnelRec } {
 	const script = clientScript();
 	const dir = stateDir();
 	const name =
@@ -120,7 +120,7 @@ function startTunnel(server: string, tunnels: string[], root = true): { name: st
 			.slice(0, 40) || "default";
 	const logPath = join(dir, `${name}.log`);
 
-	// 默认占用域名根（前端不用改）；多端口时第一个占根，其余走 /t/<id>/ 前缀
+	// 显式 root 才占域名根；多端口时第一个占根，其余走 /t/<id>/ 前缀
 	const specs = root
 		? [{ local: tunnels[0], root: true }, ...tunnels.slice(1).map((local) => ({ local }))]
 		: tunnels;
@@ -159,7 +159,7 @@ function fmtRec(name: string, rec: TunnelRec, urls: string[]): string {
 }
 
 /** 起一组隧道并等到拿到 URL（或判定在等审批/失败） */
-async function up(server: string, tunnels: string[], root = true) {
+async function up(server: string, tunnels: string[], root = false) {
 	const state = loadState();
 	for (const [name, rec] of Object.entries(state.tunnels)) {
 		if (alive(rec.pid)) {
@@ -234,7 +234,7 @@ export default function (pi: ExtensionAPI) {
 			server: Type.Optional(Type.String({ description: `edge 地址，默认 ${DEFAULT_SERVER}` })),
 			root: Type.Optional(
 				Type.Boolean({
-					description: "占用域名根（默认 true）：应用直接在 https://域名/ 下，/api/… 这类根绝对路径也能用；传 false 走 /t/<id>/ 前缀",
+					description: "占用域名根（默认 false）：设为 true 时应用直接在 https://域名/ 下，/api/… 这类根绝对路径也能用",
 				}),
 			),
 		}),
@@ -245,7 +245,7 @@ export default function (pi: ExtensionAPI) {
 			);
 			if (!tunnels.length) throw new Error("至少要给一个本地端口");
 
-			const { name, rec, urls, log, pending } = await up(server, tunnels, params.root !== false);
+			const { name, rec, urls, log, pending } = await up(server, tunnels, !!params.root);
 			refreshStatus(ctx);
 			if (urls.length) ctx.ui.notify(`隧道已上线: ${urls.join(" ")}`, "success");
 			else ctx.ui.notify(pending ? "隧道等待审批" : "隧道没起来，看日志", pending ? "info" : "warning");
@@ -286,7 +286,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("tunnel", {
-		description: "内网穿透：/tunnel up 8080 [--prefix] | status | down（默认占域名根）",
+		description: "内网穿透：/tunnel up 8080 [--root] | status | down",
 		handler: async (args, ctx) => {
 			const parts = (args || "").trim().split(/\s+/).filter(Boolean);
 			const sub = parts[0] || "status";
@@ -298,12 +298,12 @@ export default function (pi: ExtensionAPI) {
 			}
 			if (sub === "up" || sub === "start") {
 				const rest = parts.slice(1);
-				const wantRoot = !rest.includes("--prefix");
-				const ports = rest.filter((p) => p !== "--root" && p !== "--prefix" && p !== "root");
-				if (!ports.length) return ctx.ui.notify("用法: /tunnel up 8080 [5000 ...] [--prefix]", "warning");
+				const wantRoot = rest.includes("--root") || rest.includes("root");
+				const ports = rest.filter((p) => p !== "--root" && p !== "root");
+				if (!ports.length) return ctx.ui.notify("用法: /tunnel up 8080 [5000 ...] [--root]", "warning");
 				const tunnels = ports.map((p) => (/^\d+$/.test(p) ? `127.0.0.1:${p}` : p));
 				ctx.ui.notify(
-					`正在启动隧道: ${tunnels.join(", ")}${wantRoot ? "（第一个占域名根）" : "（走 /t/<id>/ 前缀）"}…`,
+					`正在启动隧道: ${tunnels.join(", ")}${wantRoot ? "（第一个占域名根）" : ""}…`,
 					"info",
 				);
 				const { urls, log, pending } = await up(
@@ -318,7 +318,7 @@ export default function (pi: ExtensionAPI) {
 					pending ? "info" : "warning",
 				);
 			}
-			ctx.ui.notify("用法: /tunnel up 8080 5000 [--prefix] | /tunnel status | /tunnel down", "warning");
+			ctx.ui.notify("用法: /tunnel up 8080 5000 [--root] | /tunnel status | /tunnel down", "warning");
 		},
 	});
 
