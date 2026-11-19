@@ -1,0 +1,10 @@
+{
+  "uuid": "laptop",
+  "label": "DESKTOP-8NUBSCR",
+  "tunnels": [
+    {
+      "local": "127.0.0.1:2398",
+      "id": "lap1"
+    }
+  ]
+}

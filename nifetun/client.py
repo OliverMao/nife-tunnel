@@ -180,6 +180,7 @@ class ServerConn(MuxConn):
         self.srv: dict = {}
         self.authed = False
         self.auth_failed = False  # token/白名单问题：别疯狂重连
+        self._pending_noted = False  # 待审批提示只说一次，别每 30 秒刷屏
         self._hb: asyncio.Task | None = None
         self._hs: asyncio.TimerHandle | None = None
 
@@ -243,7 +244,9 @@ class ServerConn(MuxConn):
                 self.client._enroll_claim = 0.0
                 self.client.save_identity()
                 log.info("服务端分配的客户端 UUID: %s", uuid)
-            log.info("%s", msg.get("note") or "等待管理员批准")
+            if not self._pending_noted:
+                self._pending_noted = True
+                log.info("%s", msg.get("note") or "等待管理员批准")
         elif kind == "enroll_ok":
             self._on_enroll_ok(msg)
         elif kind == "challenge":
