@@ -66,6 +66,7 @@ class ClientConn(MuxConn):
         self.edge = edge
         self.hosts: list[str] = []
         self.ids: list[str] = []
+        self.is_root = False
         self.client_name = ""
         self.authed = False
         self.connected_at = time.monotonic()
@@ -180,10 +181,23 @@ class ClientConn(MuxConn):
         hosts: list[str] = []
         ids: list[str] = []
         assigned: list[dict] = []
+        roots: list[dict] = []
         for t in msg.get("tunnels") or []:
             tid = str(t.get("id") or "").strip().lower()
             host = "" if tid else str(t.get("host") or "").strip().lower().rstrip(".")
             local = str(t.get("local") or "?")
+            if t.get("root"):
+                # 域名根交给这条隧道：前端可以继续用 /api/xxx、/assets/xxx 这种根绝对路径
+                owner = self.edge.root_conn
+                if owner is not None and owner is not self:
+                    log.warning("%s 想占用域名根，但已被 %s 占用，拒绝", self.peer, owner.peer)
+                    denied.append("root")
+                    continue
+                self.edge.set_root(self)
+                roots.append({"local": local, "root": True})
+                if not self.is_root:
+                    log.info("%s 占用域名根 / -> %s", self.peer, local)
+                continue
             if tid:
                 # 客户端带回来的是上次服务端分配的 ID
                 if not ID_RE.match(tid) or not _match_any(tid, self._allowed_ids):
@@ -229,6 +243,12 @@ class ClientConn(MuxConn):
             self.edge.add_routes(self, add_h)
         if add_i:
             self.edge.add_id_routes(self, add_i)
+        if not roots and self.is_root:
+            self.edge.set_root(None)
+            self.is_root = False
+            log.info("%s 释放域名根", self.peer)
+        else:
+            self.is_root = bool(roots)
         self.hosts = hosts
         self.ids = ids
         self.write_frame(
@@ -241,7 +261,7 @@ class ClientConn(MuxConn):
                 "denied": denied,
                 "w": self.our_window,
                 "prefix": self.edge.prefix,
-                "tunnels": assigned,
+                "tunnels": assigned + roots,
                 "public_hosts": self.edge.prefix_hosts,
             }),
         )
@@ -307,6 +327,7 @@ class Edge:
         self.access_log = bool(cfg.get("access_log", True))
         self.ws_path = str(cfg.get("ws_path") or "/_nifetun/ws").encode()
         self.prefix_rewrite = bool(cfg.get("prefix_rewrite", True))
+        self.root_conn: "ClientConn | None" = None
         self.id_owner: dict[str, str] = {}
         #: "客户端|本地地址" -> 隧道 ID，保证同一客户端的多条连接拿到同一个 URL
         self.id_by_local: dict[str, str] = {}
@@ -321,6 +342,9 @@ class Edge:
         self._admin: Admin | None = None
 
     # ---------- 客户端凭证 ----------
+    def set_root(self, conn: "ClientConn | None") -> None:
+        self.root_conn = conn
+
     def new_client_conn(self) -> "ClientConn":
         return ClientConn(self, self.window)
 
@@ -569,6 +593,8 @@ class Edge:
                 self.routes_by_id.pop(tid, None)
 
     def unregister(self, conn: ClientConn) -> None:
+        if self.root_conn is conn:
+            self.root_conn = None
         self.clients.discard(conn)
         self.remove_routes(conn, conn.hosts)
         self.remove_id_routes(conn, conn.ids)
@@ -653,6 +679,7 @@ class Edge:
             "client_listen": self.cfg.get("client_listen"),
             "prefix": self.prefix,
             "public_hosts": self.prefix_hosts,
+            "root": self.root_conn.peer if self.root_conn else None,
             "clients": clients,
             "routes": {h: [c.peer for c in b] for h, b in self.routes.items()},
             "routes_by_id": {i: [c.peer for c in b] for i, b in self.routes_by_id.items()},

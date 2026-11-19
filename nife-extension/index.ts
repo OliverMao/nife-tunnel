@@ -110,7 +110,7 @@ function killTree(pid: number): void {
 	}
 }
 
-function startTunnel(server: string, tunnels: string[]): { name: string; rec: TunnelRec } {
+function startTunnel(server: string, tunnels: string[], root = false): { name: string; rec: TunnelRec } {
 	const script = clientScript();
 	const dir = stateDir();
 	const name =
@@ -120,7 +120,8 @@ function startTunnel(server: string, tunnels: string[]): { name: string; rec: Tu
 			.slice(0, 40) || "default";
 	const logPath = join(dir, `${name}.log`);
 
-	const cfg = { server, tunnels, reload_interval: 0 };
+	const specs = root ? [{ local: tunnels[0], root: true }] : tunnels;
+	const cfg = { server, tunnels: specs, reload_interval: 0 };
 	// 用当前 node 跑脚本，stdio 全部不接（没有控制台窗口），日志由脚本自己写文件
 	const child = spawn(process.execPath, [script, "--json", JSON.stringify(cfg), "--log-file", logPath], {
 		cwd: dir, // 凭证/隧道 ID 落在 ~/.nife/agent/nifetun/，重启后 URL 不变
@@ -155,7 +156,7 @@ function fmtRec(name: string, rec: TunnelRec, urls: string[]): string {
 }
 
 /** 起一组隧道并等到拿到 URL（或判定在等审批/失败） */
-async function up(server: string, tunnels: string[]) {
+async function up(server: string, tunnels: string[], root = false) {
 	const state = loadState();
 	for (const [name, rec] of Object.entries(state.tunnels)) {
 		if (alive(rec.pid)) {
@@ -163,7 +164,7 @@ async function up(server: string, tunnels: string[]) {
 			delete state.tunnels[name];
 		}
 	}
-	const { name, rec } = startTunnel(server, tunnels);
+	const { name, rec } = startTunnel(server, tunnels, root);
 	state.tunnels[name] = rec;
 	saveState(state);
 
@@ -210,6 +211,9 @@ export default function (pi: ExtensionAPI) {
 		parameters: Type.Object({
 			tunnels: Type.Array(Type.String({ description: "本地地址，如 127.0.0.1:8080 或 8080" })),
 			server: Type.Optional(Type.String({ description: `edge 地址，默认 ${DEFAULT_SERVER}` })),
+			root: Type.Optional(
+				Type.Boolean({ description: "占用域名根：应用直接在 https://域名/ 下，/api/… 这种根绝对路径也能用" }),
+			),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const server = params.server || process.env.NIFETUN_SERVER || DEFAULT_SERVER;
@@ -218,7 +222,7 @@ export default function (pi: ExtensionAPI) {
 			);
 			if (!tunnels.length) throw new Error("至少要给一个本地端口");
 
-			const { name, rec, urls, log, pending } = await up(server, tunnels);
+			const { name, rec, urls, log, pending } = await up(server, tunnels, !!params.root);
 			if (urls.length) ctx.ui.notify(`隧道已上线: ${urls.join(" ")}`, "success");
 			else ctx.ui.notify(pending ? "隧道等待审批" : "隧道没起来，看日志", pending ? "info" : "warning");
 
@@ -257,7 +261,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("tunnel", {
-		description: "内网穿透：/tunnel up 8080 5000 | status | down",
+		description: "内网穿透：/tunnel up 8080 [--root] | status | down",
 		handler: async (args, ctx) => {
 			const parts = (args || "").trim().split(/\s+/).filter(Boolean);
 			const sub = parts[0] || "status";
@@ -267,18 +271,24 @@ export default function (pi: ExtensionAPI) {
 				return ctx.ui.notify(done.length ? `已停止 ${done.join(", ")}` : "没有在跑的隧道", "info");
 			}
 			if (sub === "up" || sub === "start") {
-				const ports = parts.slice(1);
-				if (!ports.length) return ctx.ui.notify("用法: /tunnel up 8080 [5000 ...]", "warning");
+				const rest = parts.slice(1);
+				const wantRoot = rest.includes("--root") || rest.includes("root");
+				const ports = rest.filter((p) => p !== "--root" && p !== "root");
+				if (!ports.length) return ctx.ui.notify("用法: /tunnel up 8080 [5000 ...] [--root]", "warning");
 				const tunnels = ports.map((p) => (/^\d+$/.test(p) ? `127.0.0.1:${p}` : p));
-				ctx.ui.notify(`正在启动隧道: ${tunnels.join(", ")}…`, "info");
-				const { urls, log, pending } = await up(process.env.NIFETUN_SERVER || DEFAULT_SERVER, tunnels);
+				ctx.ui.notify(`正在启动隧道: ${tunnels.join(", ")}${wantRoot ? "（占用域名根）" : ""}…`, "info");
+				const { urls, log, pending } = await up(
+					process.env.NIFETUN_SERVER || DEFAULT_SERVER,
+					tunnels,
+					wantRoot,
+				);
 				if (urls.length) return ctx.ui.notify(`已上线:\n${urls.join("\n")}`, "success");
 				return ctx.ui.notify(
 					pending ? "等待审批：点邮件里的「批准接入」后会自动上线" : `没拿到 URL。日志:\n${tail(log ? "" : "", 6) || log}`,
 					pending ? "info" : "warning",
 				);
 			}
-			ctx.ui.notify("用法: /tunnel up 8080 5000 | /tunnel status | /tunnel down", "warning");
+			ctx.ui.notify("用法: /tunnel up 8080 5000 [--root] | /tunnel status | /tunnel down", "warning");
 		},
 	});
 

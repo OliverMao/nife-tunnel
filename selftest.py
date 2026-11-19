@@ -375,6 +375,20 @@ async def main() -> int:
         assert (status, body) == (200, b"origin:hot.test/back"), (status, body)
         step("改配置文件后新隧道自动上线（无需重启客户端）")
 
+        # 根隧道：把域名根交给这条隧道，前端的 /api/…、/assets/… 就都能用了
+        cfg["tunnels"] = cfg["tunnels"] + [{"root": True, "local": f"127.0.0.1:{ports['origin']}"}]
+        client.write_cfg(cfg)
+        for _ in range(200):
+            if edge.root_conn is not None:
+                break
+            await asyncio.sleep(0.05)
+        assert edge.root_conn is not None, "根隧道没生效"
+        status, body = await one_call(pub, PREFIX_HOST, "/api/ping?x=1")
+        assert (status, body) == (200, b"origin:" + PREFIX_HOST.encode() + b"/api/ping?x=1"), (status, body)
+        status, body = await one_call(pub, PREFIX_HOST, "/")
+        assert status == 200, status
+        step("根隧道：/ 和 /api/… 这类根绝对路径原样到达应用（第三方前端免改）")
+
         status, data = await admin_call(ports["admin"], "/api/kick?peer=all", "POST")
         assert status == 200, data
         step("管理 API /api/kick 踢掉连接")

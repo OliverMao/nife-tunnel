@@ -123,6 +123,22 @@ class PublicProto(Bridge):
                 mux.send_data(st, rest)
             return
 
+        # --- 2.5) 根隧道：域名根上的任何路径（/api/…、/assets/…、/）都交给它 ---
+        root_mux = self.edge.root_conn
+        if root_mux is not None:
+            self.edge.access(self.peer, "root", request_line)
+            try:
+                st = root_mux.open_stream({"root": True, "w": root_mux.our_window, "remote": self.peer})
+            except Exception:
+                self._reject(502, b"tunnel unavailable")
+                return
+            self.attach(st)
+            mux_root = st.mux
+            mux_root.send_data(st, head)
+            if rest:
+                mux_root.send_data(st, rest)
+            return
+
         # --- 3) Host 路由 ---
         mux = self.edge.pick(host) if host else None
         if mux is None:

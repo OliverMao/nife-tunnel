@@ -120,6 +120,7 @@ function parseTunnels(cfg) {
 			local,
 			id: (t.id || "").toLowerCase() || null,
 			host: (t.host || "").toLowerCase() || null,
+			root: !!t.root,
 			label: t.label || "",
 		};
 	});
@@ -326,7 +327,7 @@ class Mux {
 		if (type === OPEN) {
 			const info = payload.length ? JSON.parse(payload.toString("utf8")) : {};
 			const credit = Number(info.w) || this.peerWindow;
-			const key = String(info.id || info.host || "").toLowerCase();
+			const key = String(info.id || info.host || (info.root ? "root" : "")).toLowerCase();
 			const target = this.byKey.get(key);
 			if (!target) {
 				warn(`收到未知隧道 ${key} 的流，重置`);
@@ -593,7 +594,8 @@ class Client {
 	tunnelPayload() {
 		return this.specs.map((sp) => {
 			const item = { local: sp.local };
-			if (sp.host) item.host = sp.host;
+			if (sp.root) item.root = true;
+			else if (sp.host) item.host = sp.host;
 			else if (sp.id) item.id = sp.id;
 			if (sp.label) item.label = sp.label;
 			return item;
@@ -603,7 +605,7 @@ class Client {
 	rebuildKeys(mux) {
 		mux.byKey.clear();
 		for (const sp of this.specs) {
-			const key = sp.host || sp.id;
+			const key = sp.root ? "root" : sp.host || sp.id;
 			if (!key) continue;
 			const [host, port] = splitLocal(sp.local);
 			mux.byKey.set(key.toLowerCase(), { host, port });
@@ -633,7 +635,8 @@ class Client {
 	logUrls(prefix = "/t") {
 		const base = (this.publicHosts && this.publicHosts[0]) || new URL(this.servers[0].url).host;
 		for (const sp of this.specs) {
-			if (sp.host) info(`入口: https://${sp.host}/  ->  ${sp.local}`);
+			if (sp.root) info(`入口: https://${base}/  ->  ${sp.local}（占用域名根）`);
+			else if (sp.host) info(`入口: https://${sp.host}/  ->  ${sp.local}`);
 			else if (sp.id) info(`入口: https://${base}${prefix}/${sp.id}/  ->  ${sp.local}`);
 		}
 	}
