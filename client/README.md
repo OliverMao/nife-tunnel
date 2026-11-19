@@ -1,7 +1,9 @@
-# nifetun 客户端
+# nifetun 客户端（独立版）
 
-把内网服务挂到 `https://nife-tunnel.yoobit.cn/t/<id>/`。
-单文件二进制，不用装 Python、不用装服务。
+> **用 nife 的话不需要这个** —— `nife install git:github.com/OliverMao/nife-tunnel` 自带 Node 客户端。
+> 这个版本给"完全不想装 Node"的机器用，协议一样。
+
+把内网服务挂到 `https://nife-tunnel.yoobit.cn/t/<id>/`。单文件二进制，不用装 Python、不用装服务。
 
 ```
 nifetun-client.exe   Windows x64

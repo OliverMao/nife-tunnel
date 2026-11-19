@@ -14,13 +14,18 @@ import sys
 GRACE = 2.0
 
 
-def setup_logging(verbose: bool = False) -> None:
-    logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.INFO,
-        format="%(asctime)s %(levelname)-7s %(name)-16s | %(message)s",
-        datefmt="%H:%M:%S",
-        stream=sys.stderr,
-    )
+def setup_logging(verbose: bool = False, log_file: str | None = None) -> None:
+    """log_file 给了就写文件（无控制台的打包版本用），否则写 stderr。"""
+    fmt = "%(asctime)s %(levelname)-7s %(name)-16s | %(message)s"
+    if log_file:
+        handler: logging.Handler = logging.FileHandler(log_file, encoding="utf-8")
+    else:
+        handler = logging.StreamHandler(sys.stderr or sys.stdout)
+    handler.setFormatter(logging.Formatter(fmt, datefmt="%H:%M:%S"))
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(logging.DEBUG if verbose else logging.INFO)
 
 
 def loop_name() -> str:

@@ -67,6 +67,8 @@ def main(argv: list[str] | None = None) -> int:
                     help='直接把配置当字符串传进来，形如 {"server": "https://域名", "tunnels": ["127.0.0.1:8080"]}；'
                          '写 - 表示从 stdin 读')
     ap.add_argument("-v", "--verbose", action="store_true")
+    ap.add_argument("--log-file", metavar="PATH", default=None,
+                    help="日志写文件而不是控制台（无窗口版本用）")
     ap.add_argument("--fingerprint", metavar="HOST:PORT", help="打印服务器证书 sha256 指纹")
     ap.add_argument("--sni", help="配合 --fingerprint 指定 SNI")
     args = ap.parse_args(argv)
@@ -77,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
             ap.error("--fingerprint 需要 host:port")
         return runtime.run(fingerprint(host or "127.0.0.1", int(port), args.sni))
 
-    runtime.setup_logging(args.verbose)
+    runtime.setup_logging(args.verbose, args.log_file)
 
     if args.json is not None:
         # 命令行直接给 JSON：不写文件，也就没有热重载

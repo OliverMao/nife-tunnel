@@ -1,7 +1,7 @@
 {
   "name": "nifetun",
-  "version": "0.1.2",
-  "description": "nife 插件：把本机端口通过自建 nifetun 隧道暴露到公网（/tunnel up 8080）",
+  "version": "0.2.0",
+  "description": "nife 插件：把本机端口通过自建 nifetun 隧道暴露到公网（纯 Node，无需打包）",
   "keywords": [
     "pi-package",
     "nife",
@@ -31,8 +31,5 @@
       "optional": true
     }
   },
-  "repository": "github:OliverMao/nife-tunnel",
-  "scripts": {
-    "postinstall": "node scripts/install.js"
-  }
+  "repository": "github:OliverMao/nife-tunnel"
 }

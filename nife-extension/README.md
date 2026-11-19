@@ -7,23 +7,17 @@
 ## 安装
 
 ```bash
-nife install git:github.com/OliverMao/nife-tunnel@v0.1.0
+nife install git:github.com/OliverMao/nife-tunnel@v0.2.0
 ```
 
-就这一条。安装时 `postinstall` 会**只下载你当前平台**的客户端（win32-x64 或 linux-x64，约 7 MB），
-放到 `nife-extension/bin/<平台>/`，装完直接用，不用另外准备什么。
-
-- 换服务器/换仓库：设 `NIFETUN_DOWNLOAD_BASE`（镜像目录）或 `NIFETUN_REPO`
-- 已经有客户端：设 `NIFETUN_CLIENT=/path/to/nifetun-client`，安装时跳过下载
-- 下载没成功也不影响安装：**第一次 `/tunnel up` 时会再自动下一次**，仍不行才报错提示手动放
+一条命令，没有别的步骤：**客户端就在包里，是 Node 脚本**（`client/tunnelc.mjs`，零依赖），
+由插件用 nife 自己的 node 拉起 —— 不打包、不下载、不需要额外环境。
 
 ```bash
 nife -e git:github.com/OliverMao/nife-tunnel   # 只试用一次，不写 settings
 nife remove git:github.com/OliverMao/nife-tunnel
 nife list
 ```
-
-装完重开 nife（或 `/reload`）即生效。
 
 ## 用法
 
@@ -50,22 +44,24 @@ nife
 ## 包结构
 
 ```
-package.json                     name / keywords:["pi-package"] / pi.extensions / postinstall
-scripts/install.js               安装时按平台下载客户端（只下自己那份）
-scripts/pack-release.sh          把 client/ 的二进制整理成 Release 附件
-nife-extension/index.ts          扩展本体（3 个工具 + /tunnel 命令，缺二进制时会自动补下）
+package.json                   name / keywords:["pi-package"] / pi.extensions
+nife-extension/index.ts        扩展本体（3 个工具 + /tunnel 命令）
+nife-extension/client/tunnelc.mjs   客户端（Node，零依赖，走 CDN 443 的 WebSocket）
 ```
 
-- 二进制**不进 git**（`nife-extension/bin/` 已 gitignore），走 GitHub Releases：
-  附件名 `nifetun-client-<platform>-<arch>[.exe]`
-- `nife-coding-agent` / `typebox` 是 `peerDependencies` 且标 `optional`：
-  由 nife 自己提供，不让 npm 去装（私有 registry 上装不到也不会让安装失败）
+- 全 Node：不需要编译、不需要按平台下二进制，`nife install` 秒装
+- 隧道进程是插件用 `process.execPath` 起的独立后台进程，`stdio: ignore`，
+  **不会弹控制台窗口**；nife 退出后它继续跑
+- `nife-coding-agent` / `typebox` 是 `peerDependencies` 且标 `optional`：由 nife 提供，
+  不让 npm 去装（私有 registry 上装不到也不会让安装失败）
 
-### 发版
+### 也可以不要 nife（可选）
+
+仓库里还有一份等价的 Python 客户端（`client/`，用了 Nuitka 打包成单文件），
+适合完全不想装 Node 的机器；它和 Node 版协议一致，走同一个 edge：
 
 ```bash
-./scripts/pack-release.sh                 # 生成 release/ 下三个附件
-gh release create v0.1.0 release/* --title v0.1.0 --notes "nifetun 客户端"
+./scripts/pack-release.sh    # 把 client/ 的二进制整理成 Release 附件
 ```
 
 ## 行为

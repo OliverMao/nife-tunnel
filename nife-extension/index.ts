@@ -1,27 +1,16 @@
 /**
  * nifetun —— 让 nife 直接把本机端口穿透到公网。
  *
- * 安装：把本目录拷到 ~/.nife/agent/extensions/nifetun/
- *      （或者 nife install 一个包含它的包）
- * 依赖：同目录 bin/ 下放 nifetun-client(.exe)，或者设环境变量 NIFETUN_CLIENT 指向二进制
+ * 全部是 Node：客户端脚本就在本包 client/tunnelc.mjs，由插件用当前 node 拉起，
+ * 不打包、不下载、不弹控制台窗口。
  *
- * 提供：
- *   工具 tunnel_up / tunnel_status / tunnel_down
- *   命令 /tunnel up 8080 5000 | status | down
+ * 安装：nife install git:github.com/OliverMao/nife-tunnel@<tag>
+ * 用法：/tunnel up 8080 [5000 ...] | /tunnel status | /tunnel down
+ * 工具：tunnel_up / tunnel_status / tunnel_down
  */
 
-import { spawn, spawnSync } from "node:child_process";
-import {
-	chmodSync,
-	closeSync,
-	existsSync,
-	mkdirSync,
-	openSync,
-	readFileSync,
-	readdirSync,
-	statSync,
-	writeFileSync,
-} from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,23 +19,26 @@ import { Type } from "typebox";
 
 const DEFAULT_SERVER = "https://nife-tunnel.yoobit.cn";
 
-type TunnelRec = {
-	pid: number;
-	server: string;
-	tunnels: string[];
-	log: string;
-	startedAt: number;
-};
-
+type TunnelRec = { pid: number; server: string; tunnels: string[]; log: string; startedAt: number };
 type State = { tunnels: Record<string, TunnelRec> };
 
 function here(): string {
-	// jiti 下 import.meta.url 可用；拿不到就退回 cwd
 	try {
 		return dirname(fileURLToPath(import.meta.url));
 	} catch {
 		return process.cwd();
 	}
+}
+
+/** 客户端脚本位置：包内 client/tunnelc.mjs，可用 NIFETUN_CLIENT 覆盖 */
+function clientScript(): string {
+	const override = process.env.NIFETUN_CLIENT;
+	if (override && existsSync(override)) return override;
+	const p = join(here(), "client", "tunnelc.mjs");
+	if (!existsSync(p)) {
+		throw new Error(`找不到客户端脚本 ${p}（可设 NIFETUN_CLIENT 指定）`);
+	}
+	return p;
 }
 
 function stateDir(): string {
@@ -55,23 +47,19 @@ function stateDir(): string {
 	return dir;
 }
 
-function statePath(): string {
-	return join(stateDir(), "state.json");
-}
+const statePath = () => join(stateDir(), "state.json");
 
 function loadState(): State {
 	try {
 		const raw = JSON.parse(readFileSync(statePath(), "utf8"));
 		if (raw && typeof raw === "object" && raw.tunnels) return raw as State;
 	} catch {
-		// 没有就空状态
+		// 空状态
 	}
 	return { tunnels: {} };
 }
 
-function saveState(state: State): void {
-	writeFileSync(statePath(), JSON.stringify(state, null, 2));
-}
+const saveState = (s: State) => writeFileSync(statePath(), JSON.stringify(s, null, 2));
 
 function alive(pid: number): boolean {
 	if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -83,138 +71,9 @@ function alive(pid: number): boolean {
 	}
 }
 
-const PLAT = `${process.platform}-${process.arch}`;
-const IS_WIN = process.platform === "win32";
-
-function pkgMeta(): { version: string; repo: string } {
-	const file = join(here(), "..", "package.json");
+function tail(path: string, lines = 20): string {
 	try {
-		const pkg = JSON.parse(readFileSync(file, "utf8"));
-		const r = typeof pkg.repository === "string" ? pkg.repository : pkg.repository?.url || "";
-		return {
-			version: pkg.version || "0.1.0",
-			repo: String(r).replace(/^github:/, "").replace(/\.git$/, "") || "OliverMao/nife-tunnel",
-		};
-	} catch {
-		return { version: "0.1.0", repo: "OliverMao/nife-tunnel" };
-	}
-}
-
-function magicOk(buf: Uint8Array): boolean {
-	if (IS_WIN) return buf[0] === 0x4d && buf[1] === 0x5a;
-	return buf[0] === 0x7f && buf[1] === 0x45 && buf[2] === 0x4c && buf[3] === 0x46;
-}
-
-/** 包里没带二进制时，按当前平台下一个（只下自己那份）。 */
-export async function downloadBinary(): Promise<string> {
-	const name = IS_WIN ? "nifetun-client.exe" : "nifetun-client";
-	const destDir = join(here(), "bin", PLAT);
-	const dest = join(destDir, name);
-	const { version, repo } = pkgMeta();
-	const asset = `nifetun-client-${PLAT}${IS_WIN ? ".exe" : ""}`;
-	const base = process.env.NIFETUN_DOWNLOAD_BASE?.replace(/\/$/, "");
-	const urls = [
-		base ? `${base}/${asset}` : "",
-		`https://github.com/${repo}/releases/download/v${version}/${asset}`,
-		`https://github.com/${repo}/releases/latest/download/${asset}`,
-	].filter(Boolean);
-
-	// 私有仓库：先试 gh（用本机登录态），再试带 token 的直连，最后裸 URL
-	const errors: string[] = [];
-	const viaGh = ghDownload(`v${version}`, repo, asset, destDir);
-	if (viaGh) return viaGh;
-	const headers: Record<string, string> = {};
-	const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
-	if (token) headers.Authorization = `Bearer ${token}`;
-	for (const url of urls) {
-		try {
-			const res = await fetch(url, { redirect: "follow", headers });
-			if (!res.ok) throw new Error(`HTTP ${res.status}`);
-			const buf = new Uint8Array(await res.arrayBuffer());
-			if (buf.length < 1024 * 1024) throw new Error(`只有 ${buf.length}B`);
-			if (!magicOk(buf)) throw new Error("文件头不对（平台不符？）");
-			mkdirSync(destDir, { recursive: true });
-			writeFileSync(dest, buf);
-			if (!IS_WIN) {
-				try {
-					chmodSync(dest, 0o755);
-				} catch {
-					// 非 POSIX 平台忽略
-				}
-			}
-			return dest;
-		} catch (e) {
-			errors.push(`${url} -> ${(e as Error).message}`);
-		}
-	}
-	throw new Error(
-		`找不到 ${PLAT} 的 nifetun-client，自动下载也失败了。\n` +
-			errors.map((x) => `  ${x}`).join("\n") +
-			`\n  手动下载放到 ${dest}，或设 NIFETUN_CLIENT 指向已有二进制`,
-	);
-}
-
-/** 用 gh CLI 下 release 附件（私有仓库需要登录态）；成功返回文件路径 */
-function ghDownload(tag: string, repo: string, asset: string, destDir: string): string | null {
-	try {
-		const probe = spawnSync(process.platform === "win32" ? "where" : "which", ["gh"], { encoding: "utf8" });
-		if (probe.status !== 0) return null;
-		mkdirSync(destDir, { recursive: true });
-		const run = spawnSync("gh", ["release", "download", tag, "-R", repo, "-p", asset, "-D", destDir, "--clobber"], {
-			encoding: "utf8",
-		});
-		if (run.status !== 0) return null;
-		const got = join(destDir, asset);
-		if (!existsSync(got)) return null;
-		const buf = readFileSync(got);
-		if (buf.length < 1024 * 1024 || !magicOk(buf)) return null;
-		if (!IS_WIN) {
-			try {
-				chmodSync(got, 0o755);
-			} catch {
-				// 忽略
-			}
-		}
-		return got;
-	} catch {
-		return null;
-	}
-}
-
-async function ensureBinary(): Promise<string> {
-	try {
-		return findBinary();
-	} catch {
-		return downloadBinary();
-	}
-}
-
-function findBinary(): string {
-	const env = process.env.NIFETUN_CLIENT;
-	if (env && existsSync(env)) return env;
-	const dir = here();
-	const names = process.platform === "win32" ? ["nifetun-client.exe"] : ["nifetun-client"];
-	// 二进制按平台分目录放（bin/win32-x64 / bin/linux-x64），避免和同目录的另一种产物混淆
-	const plat = `${process.platform}-${process.arch}`;
-	for (const n of names) {
-		for (const p of [join(dir, "bin", plat, n), join(dir, "bin", n), join(dir, n)]) {
-			if (existsSync(p)) return p;
-		}
-	}
-	// 最后看 PATH
-	for (const n of names) {
-		const which = spawnSync(process.platform === "win32" ? "where" : "which", [n], { encoding: "utf8" });
-		if (which.status === 0 && which.stdout.trim()) return which.stdout.trim().split(/\r?\n/)[0];
-	}
-	throw new Error(
-		`找不到 nifetun-client。把二进制放到 ${join(dir, "bin")}，或设置环境变量 NIFETUN_CLIENT`,
-	);
-}
-
-function tail(path: string, lines = 12): string {
-	try {
-		const text = readFileSync(path, "utf8").trimEnd().split(/\r?\n/);
-		return text.slice(-lines).join("\n");
+		return readFileSync(path, "utf8").trimEnd().split(/\r?\n/).slice(-lines).join("\n");
 	} catch {
 		return "";
 	}
@@ -229,7 +88,7 @@ function parseUrls(logPath: string): string[] {
 			if (m) out.push(m[1]);
 		}
 	} catch {
-		// 日志还没写
+		// 日志还没生成
 	}
 	return [...new Set(out)];
 }
@@ -237,53 +96,48 @@ function parseUrls(logPath: string): string[] {
 function killTree(pid: number): void {
 	if (!alive(pid)) return;
 	if (process.platform === "win32") {
-		spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" });
-	} else {
+		spawn("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+		return;
+	}
+	try {
+		process.kill(-pid, "SIGTERM");
+	} catch {
 		try {
-			process.kill(-pid, "SIGTERM");
+			process.kill(pid, "SIGTERM");
 		} catch {
-			try {
-				process.kill(pid, "SIGTERM");
-			} catch {
-				// 已经没了
-			}
+			// 已经没了
 		}
 	}
 }
 
-function startTunnel(bin: string, server: string, tunnels: string[]): { name: string; rec: TunnelRec } {
+function startTunnel(server: string, tunnels: string[]): { name: string; rec: TunnelRec } {
+	const script = clientScript();
 	const dir = stateDir();
-	const name = tunnels
-		.map((t) => t.replace(/[^a-zA-Z0-9]+/g, "-"))
-		.join("_")
-		.slice(0, 40) || "default";
+	const name =
+		tunnels
+			.map((t) => t.replace(/[^a-zA-Z0-9]+/g, "-"))
+			.join("_")
+			.slice(0, 40) || "default";
 	const logPath = join(dir, `${name}.log`);
-	const fd = openSync(logPath, "w");
 
 	const cfg = { server, tunnels, reload_interval: 0 };
-	const child = spawn(bin, ["--json", JSON.stringify(cfg)], {
+	// 用当前 node 跑脚本，stdio 全部不接（没有控制台窗口），日志由脚本自己写文件
+	const child = spawn(process.execPath, [script, "--json", JSON.stringify(cfg), "--log-file", logPath], {
 		cwd: dir, // 凭证/隧道 ID 落在 ~/.nife/agent/nifetun/，重启后 URL 不变
 		detached: true,
-		stdio: ["ignore", fd, fd],
+		stdio: "ignore",
 		windowsHide: true,
 	});
-	closeSync(fd);
-	let spawnError = "";
 	child.on("error", (err) => {
-		spawnError = String((err as Error)?.message || err);
-		writeFileSync(logPath, `启动失败: ${spawnError}
-二进制: ${bin}
-`, { flag: "a" });
+		try {
+			writeFileSync(logPath, `启动失败: ${(err as Error).message}\n脚本: ${script}\n`, { flag: "a" });
+		} catch {
+			// 忽略
+		}
 	});
 	child.unref();
 
-	const rec: TunnelRec = {
-		pid: child.pid ?? 0,
-		server,
-		tunnels,
-		log: logPath,
-		startedAt: Date.now(),
-	};
+	const rec: TunnelRec = { pid: child.pid ?? 0, server, tunnels, log: logPath, startedAt: Date.now() };
 	return { name, rec };
 }
 
@@ -300,81 +154,80 @@ function fmtRec(name: string, rec: TunnelRec, urls: string[]): string {
 	return lines.join("\n");
 }
 
+/** 起一组隧道并等到拿到 URL（或判定在等审批/失败） */
+async function up(server: string, tunnels: string[]) {
+	const state = loadState();
+	for (const [name, rec] of Object.entries(state.tunnels)) {
+		if (alive(rec.pid)) {
+			killTree(rec.pid); // 同一批端口只保留一个实例
+			delete state.tunnels[name];
+		}
+	}
+	const { name, rec } = startTunnel(server, tunnels);
+	state.tunnels[name] = rec;
+	saveState(state);
+
+	let urls: string[] = [];
+	for (let i = 0; i < 30; i++) {
+		await sleep(500);
+		urls = parseUrls(rec.log);
+		if (urls.length || !alive(rec.pid)) break;
+	}
+	const log = tail(rec.log);
+	const pending = /等待审批|等待管理员批准/.test(log);
+	return { name, rec, urls, log, pending };
+}
+
 export default function (pi: ExtensionAPI) {
 	function statusAll(): string {
 		const state = loadState();
 		const names = Object.keys(state.tunnels);
-		if (names.length === 0) return "还没有在跑的隧道（用 tunnel_up 或 /tunnel up 8080 起一个）";
+		if (!names.length) return "还没有在跑的隧道（用 tunnel_up 或 /tunnel up 8080 起一个）";
 		return names.map((n) => fmtRec(n, state.tunnels[n], parseUrls(state.tunnels[n].log))).join("\n");
+	}
+
+	function downAll(only?: string): string[] {
+		const state = loadState();
+		const names = only ? [only] : Object.keys(state.tunnels);
+		const done: string[] = [];
+		for (const n of names) {
+			const rec = state.tunnels[n];
+			if (!rec) continue;
+			killTree(rec.pid);
+			delete state.tunnels[n];
+			done.push(n);
+		}
+		saveState(state);
+		return done;
 	}
 
 	pi.registerTool({
 		name: "tunnel_up",
 		label: "隧道上线",
 		description:
-			"把本机端口通过 nifetun 暴露成公网 https 地址。传本地端口/地址列表，返回分配到的公网 URL。" +
-			"首次使用会触发邮件审批，审批通过后自动上线（凭证会落盘，之后不再审批）。",
+			"把本机端口通过 nifetun 暴露成公网 https 地址，返回分配到的 URL。" +
+			"首次在新机器上会触发邮件审批，批准后自动上线（凭证落盘，之后不再审批）。",
 		parameters: Type.Object({
-			tunnels: Type.Array(
-				Type.String({ description: "本地地址，如 127.0.0.1:8080 或 8080" }),
-				{ description: "要暴露的本地服务" },
-			),
+			tunnels: Type.Array(Type.String({ description: "本地地址，如 127.0.0.1:8080 或 8080" })),
 			server: Type.Optional(Type.String({ description: `edge 地址，默认 ${DEFAULT_SERVER}` })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			const server = params.server || DEFAULT_SERVER;
+			const server = params.server || process.env.NIFETUN_SERVER || DEFAULT_SERVER;
 			const tunnels = (params.tunnels || []).map((t) =>
 				/^\d+$/.test(t.trim()) ? `127.0.0.1:${t.trim()}` : t.trim(),
 			);
-			if (tunnels.length === 0) throw new Error("至少要给一个本地端口");
+			if (!tunnels.length) throw new Error("至少要给一个本地端口");
 
-			const state = loadState();
-			for (const [name, rec] of Object.entries(state.tunnels)) {
-				if (alive(rec.pid)) {
-					killTree(rec.pid); // 同一组端口只保留一个实例
-					delete state.tunnels[name];
-				}
-			}
+			const { name, rec, urls, log, pending } = await up(server, tunnels);
+			if (urls.length) ctx.ui.notify(`隧道已上线: ${urls.join(" ")}`, "success");
+			else ctx.ui.notify(pending ? "隧道等待审批" : "隧道没起来，看日志", pending ? "info" : "warning");
 
-			const bin = await ensureBinary();
-			const { name, rec } = startTunnel(bin, server, tunnels);
-			state.tunnels[name] = rec;
-			saveState(state);
-
-			let urls: string[] = [];
-			for (let i = 0; i < 30; i++) {
-				await sleep(500);
-				urls = parseUrls(rec.log);
-				if (urls.length) break;
-				if (!alive(rec.pid)) break;
-			}
-
-			const log = tail(rec.log, 20);
-			if (urls.length) {
-				ctx.ui.notify(`隧道已上线: ${urls.join(" ")}`, "success");
-				return {
-					content: [
-						{
-							type: "text",
-							text: `${fmtRec(name, rec, urls)}\n\n日志:\n${log}`,
-						},
-					],
-					details: { name, urls, ...rec },
-				};
-			}
-			const pending = /等待审批|等待管理员批准/.test(log);
-			ctx.ui.notify(pending ? "隧道等待审批" : "隧道没起来，看日志", pending ? "info" : "warning");
-			return {
-				content: [
-					{
-						type: "text",
-						text: pending
-							? `${fmtRec(name, rec, [])}\n\n还没批准：审批邮件已发到管理员邮箱，点「批准接入」后会自动上线（不用重跑）。\n\n日志:\n${log}`
-							: `${fmtRec(name, rec, [])}\n\n没拿到 URL，日志:\n${log}`,
-					},
-				],
-				details: { name, urls, ...rec },
-			};
+			const body = urls.length
+				? `${fmtRec(name, rec, urls)}\n\n日志:\n${log}`
+				: pending
+					? `${fmtRec(name, rec, [])}\n\n还在等待审批：审批邮件已发出，点「批准接入」后会自动上线（不用重跑）。`
+					: `${fmtRec(name, rec, [])}\n\n没拿到 URL，日志:\n${log}`;
+			return { content: [{ type: "text", text: body }], details: { name, urls, pending, ...rec } };
 		},
 	});
 
@@ -392,21 +245,9 @@ export default function (pi: ExtensionAPI) {
 		name: "tunnel_down",
 		label: "隧道下线",
 		description: "停掉 nifetun 隧道。不传 name 就全停。",
-		parameters: Type.Object({
-			name: Type.Optional(Type.String({ description: "tunnel_up 返回的实例名" })),
-		}),
+		parameters: Type.Object({ name: Type.Optional(Type.String({ description: "tunnel_up 返回的实例名" })) }),
 		async execute(_id, params, _s, _u, ctx) {
-			const state = loadState();
-			const names = params.name ? [params.name] : Object.keys(state.tunnels);
-			const done: string[] = [];
-			for (const n of names) {
-				const rec = state.tunnels[n];
-				if (!rec) continue;
-				killTree(rec.pid);
-				delete state.tunnels[n];
-				done.push(n);
-			}
-			saveState(state);
+			const done = downAll(params.name);
 			ctx.ui.notify(done.length ? `已停止 ${done.join(", ")}` : "没有在跑的隧道", "info");
 			return {
 				content: [{ type: "text", text: done.length ? `已停止: ${done.join(", ")}` : "没有在跑的隧道" }],
@@ -420,57 +261,22 @@ export default function (pi: ExtensionAPI) {
 		handler: async (args, ctx) => {
 			const parts = (args || "").trim().split(/\s+/).filter(Boolean);
 			const sub = parts[0] || "status";
-			if (sub === "status") {
-				ctx.ui.notify(statusAll(), "info");
-				return;
-			}
+			if (sub === "status") return ctx.ui.notify(statusAll(), "info");
 			if (sub === "down") {
-				const state = loadState();
-				const n = parts[1];
-				const names = n ? [n] : Object.keys(state.tunnels);
-				for (const name of names) {
-					const rec = state.tunnels[name];
-					if (rec) {
-						killTree(rec.pid);
-						delete state.tunnels[name];
-					}
-				}
-				saveState(state);
-				ctx.ui.notify(names.length ? `已停止 ${names.join(", ")}` : "没有在跑的隧道", "info");
-				return;
+				const done = downAll(parts[1]);
+				return ctx.ui.notify(done.length ? `已停止 ${done.join(", ")}` : "没有在跑的隧道", "info");
 			}
 			if (sub === "up" || sub === "start") {
 				const ports = parts.slice(1);
-				if (ports.length === 0) {
-					ctx.ui.notify("用法: /tunnel up 8080 [5000 ...]", "warning");
-					return;
-				}
-				ctx.ui.notify(`正在启动隧道: ${ports.join(", ")}…`, "info");
-				const server = process.env.NIFETUN_SERVER || DEFAULT_SERVER;
+				if (!ports.length) return ctx.ui.notify("用法: /tunnel up 8080 [5000 ...]", "warning");
 				const tunnels = ports.map((p) => (/^\d+$/.test(p) ? `127.0.0.1:${p}` : p));
-				const state = loadState();
-				for (const [name, rec] of Object.entries(state.tunnels)) {
-					if (alive(rec.pid)) {
-						killTree(rec.pid);
-						delete state.tunnels[name];
-					}
-				}
-				const bin = await ensureBinary();
-				const { name, rec } = startTunnel(bin, server, tunnels);
-				state.tunnels[name] = rec;
-				saveState(state);
-				let urls: string[] = [];
-				for (let i = 0; i < 30; i++) {
-					await sleep(500);
-					urls = parseUrls(rec.log);
-					if (urls.length || !alive(rec.pid)) break;
-				}
-				if (urls.length) {
-					ctx.ui.notify(`已上线:\n${urls.join("\n")}`, "success");
-				} else {
-					ctx.ui.notify(`还没拿到 URL（可能在等审批）。日志:\n${tail(rec.log, 6)}`, "info");
-				}
-				return;
+				ctx.ui.notify(`正在启动隧道: ${tunnels.join(", ")}…`, "info");
+				const { urls, log, pending } = await up(process.env.NIFETUN_SERVER || DEFAULT_SERVER, tunnels);
+				if (urls.length) return ctx.ui.notify(`已上线:\n${urls.join("\n")}`, "success");
+				return ctx.ui.notify(
+					pending ? "等待审批：点邮件里的「批准接入」后会自动上线" : `没拿到 URL。日志:\n${tail(log ? "" : "", 6) || log}`,
+					pending ? "info" : "warning",
+				);
 			}
 			ctx.ui.notify("用法: /tunnel up 8080 5000 | /tunnel status | /tunnel down", "warning");
 		},
@@ -480,34 +286,8 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		const state = loadState();
 		const live = Object.entries(state.tunnels).filter(([, r]) => alive(r.pid));
-		if (live.length === 0) return;
+		if (!live.length) return;
 		const urls = live.flatMap(([, r]) => parseUrls(r.log));
 		ctx.ui.setStatus("nifetun", `隧道 ${live.length} 条${urls.length ? ` · ${urls[0]}` : ""}`);
 	});
-}
-
-/** 清掉已经退出的实例记录（status/up 时顺手调用） */
-export function pruneDead(): number {
-	const state = loadState();
-	let n = 0;
-	for (const [name, rec] of Object.entries(state.tunnels)) {
-		if (!alive(rec.pid)) {
-			delete state.tunnels[name];
-			n++;
-		}
-	}
-	if (n) saveState(state);
-	return n;
-}
-
-/** 供外部调试用 */
-export function listLogs(): string[] {
-	try {
-		return readdirSync(stateDir())
-			.filter((f) => f.endsWith(".log"))
-			.map((f) => join(stateDir(), f))
-			.filter((p) => statSync(p).isFile());
-	} catch {
-		return [];
-	}
 }

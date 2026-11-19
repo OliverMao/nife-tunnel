@@ -57,7 +57,11 @@ systemctl status nifetun-edge
 
 ## 作为 nife 插件
 
-`nife-extension/` 是一个自包含的 nife 扩展（含二进制），拷到 `~/.nife/agent/extensions/nifetun/` 就能用：
+`nife-extension/` 是一个 nife 包（**纯 Node，客户端脚本就在包里**，不需要编译和下载）：
+
+```bash
+nife install git:github.com/OliverMao/nife-tunnel@v0.2.0
+```
 
 ```
 /tunnel up 8080        # 本机 8080 → https://nife-tunnel.yoobit.cn/t/xxxx/
