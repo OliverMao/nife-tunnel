@@ -1,0 +1,82 @@
+{
+  "_comment": "edge 端配置。每个客户端一个独立 token，泄漏一个只影响一台机器，可单独吊销。",
+
+  "public_listen": "0.0.0.0:8443",
+  "client_listen": "0.0.0.0:9443",
+
+  "_comment_enroll": "申请审批：客户端先自助申请，你在服务器上批准后 token 才下发（token 不经过任何人工传递）。clients_file 存已批准的凭证，重启不丢",
+  "enroll": true,
+  "clients_file": "/etc/nifetun/clients.json",
+  "enroll_timeout": 600,
+
+  "_comment_email": "163 个人邮箱：smtp.163.com:465，口令填「客户端授权码」（设置→POP3/SMTP/IMAP 开启后再生成）；企业邮箱则是 smtphz.qiye.163.com:994。审批邮件收件人随便改，可以是你自己的QQ。邮件审批：客户端申请 → 发邮件给你 → 点按钮授权（token 通过已加密连接直接下发）。口令**不要写在这里**，用环境变量 NIFETUN_SMTP_PASS",
+  "email": {
+    "enabled": true,
+    "smtp_host": "smtp.163.com",
+    "smtp_port": 465,
+    "smtp_ssl": true,
+    "username": "deewpoter@163.com",
+    "from": "deewpoter@163.com",
+    "from_name": "nifetun",
+    "to": ["deewpoter@163.com"],
+    "password_env": "NIFETUN_SMTP_PASS",
+    "timeout": 20,
+    "_comment_approve_base": "审批按钮链接的域名前缀（走 ESA 就是你的入口域名，必须是 HTTPS）",
+    "approve_base": "https://nife-tunnel.yoobit.cn"
+  },
+
+  "_comment_clients": "也可以预先写死客户端：name 由客户端自己声明的 client 字段匹配；ids/hosts 是它能认领的隧道白名单（fnmatch）",
+  "clients": [
+    {
+      "name": "home",
+      "token": "用 tunneld.py --gen-token 生成，每台客户端一个",
+      "ids": ["as*", "nas"],
+      "hosts": []
+    },
+    {
+      "name": "office",
+      "token": "另外生成一个",
+      "ids": ["of-*"],
+      "hosts": []
+    }
+  ],
+
+  "_comment_legacy": "兼容模式：不想给每台机器单独发 token 就用这一项（所有客户端共用，权限走全局 allowed_ids/allowed_hosts）",
+  "token": null,
+  "allowed_ids": ["*"],
+  "allowed_hosts": ["*"],
+
+  "_comment_clienttls": "强烈建议开：客户端→edge 链路加密。自签证书即可，客户端用 --fingerprint 取指纹填 tls_pin",
+  "client_tls_cert": "/etc/nifetun/client-cert.pem",
+  "client_tls_key": "/etc/nifetun/client-key.pem",
+
+  "_comment_prefix": "路径前缀模式（只有一个域名/走 CDN 时用）。URL 形如 https://你的域名/t/<隧道ID>/",
+  "prefix": "/t",
+  "strip_prefix": true,
+
+  "_comment_prefixhosts": "只接受这些 Host（fnmatch）。走 ESA/CDN 时填自己的入口域名，这样即使回源端口被直连也进不来",
+  "prefix_hosts": ["nife-tunnel.yoobit.cn"],
+
+  "_comment_admin": "管理 API：status / health / kick。默认只监听 127.0.0.1；要给外部用必须设 admin_token",
+  "admin_listen": "127.0.0.1:9444",
+  "admin_token": null,
+
+  "_comment_publictls": "edge 自己对外提供 HTTPS 才需要；由 ESA/nginx 终止 TLS 时保持 null",
+  "public_tls_cert": null,
+  "public_tls_key": null,
+
+  "_comment_tcp": "mode=tcp（默认）：按端口路由到固定 host。mode=sni：按 ClientHello 的 SNI 路由",
+  "tcp_listeners": [
+    { "listen": "0.0.0.0:2222", "host": "ssh-local" },
+    { "listen": "0.0.0.0:443", "mode": "sni" }
+  ],
+
+  "_comment_perf": "window = 每条流的信用窗口（字节）。大文件传输可调到 1048576",
+  "window": 262144,
+  "backlog": 2048,
+  "access_log": true,
+
+  "handshake_timeout": 10,
+  "idle_timeout": 90,
+  "not_found_html": ""
+}

@@ -1,0 +1,21 @@
+[project]
+name = "nifetun"
+version = "0.2.0"
+description = "自建 Cloudflare Tunnel 风格隧道（多路复用 + 流控 + 多连接池）"
+requires-python = ">=3.12"
+dependencies = [
+    "msgspec>=0.19.0",
+    "uvloop>=0.21.0; sys_platform != 'win32'",
+]
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+build = [
+    "nuitka>=4.3.5",
+]
+setup = [
+    "alibabacloud-alidns20150109>=4.6.1",
+    "alibabacloud-esa20240910>=3.17.2",
+]

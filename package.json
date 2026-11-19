@@ -1,0 +1,38 @@
+{
+  "name": "nifetun",
+  "version": "0.1.0",
+  "description": "nife 插件：把本机端口通过自建 nifetun 隧道暴露到公网（/tunnel up 8080）",
+  "keywords": [
+    "pi-package",
+    "nife",
+    "nifetun",
+    "tunnel",
+    "port-forward"
+  ],
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./nife-extension/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "nife-coding-agent": "*",
+    "typebox": "*"
+  },
+  "files": [
+    "nife-extension",
+    "scripts"
+  ],
+  "peerDependenciesMeta": {
+    "nife-coding-agent": {
+      "optional": true
+    },
+    "typebox": {
+      "optional": true
+    }
+  },
+  "repository": "github:OliverMao/nife-tunnel",
+  "scripts": {
+    "postinstall": "node scripts/install.js"
+  }
+}

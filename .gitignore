@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+.venv/
+.dbg*
+tunneld.json
+tunnelc.json
+
+dist/
+deploy/
+build/
+client/client-credentials.json
+client/logs.txt
+
+# nife 插件的二进制：走 GitHub Releases，不进 git
+nife-extension/bin/
+
+# 客户端二进制走 GitHub Releases，不进 git
+client/nifetun-client
+client/nifetun-client.exe
