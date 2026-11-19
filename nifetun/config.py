@@ -34,6 +34,9 @@ EDGE_DEFAULTS: dict = {
     "strip_prefix": True,
     #: 只接受这些 Host（fnmatch）。走 CDN/ESA 时填自己的入口域名，防止绕过 CDN 直连
     "prefix_hosts": [],
+    #: 前缀路由下自动把 HTML 里的根绝对路径（/assets/…）改写成 /t/<id>/assets/…
+    #: 第三方前端（Vite/webpack 默认 base='/'）不改一行代码也能用
+    "prefix_rewrite": True,
     #: 服务端分配的隧道 ID 长度（十六进制字符数）
     "id_len": 12,
     #: 隧道 ID 归属表（哪个 ID 属于哪个客户端），建议和 clients_file 放一起

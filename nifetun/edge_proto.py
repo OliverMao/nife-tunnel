@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 
 from . import wire, ws
+from .rewrite import Rewriter
 from .bridge import Bridge
 from .sni import MAX_HELLO, parse_sni
 from .util import parse_host, peer_str
@@ -36,7 +37,7 @@ class PublicProto(Bridge):
     路由确定后开一条流，之后整条连接就是纯字节搬运，不再解析任何东西。
     """
 
-    __slots__ = ("edge", "pre", "resolved", "peer", "link")
+    __slots__ = ("edge", "pre", "resolved", "peer", "link", "rw")
 
     def __init__(self, edge) -> None:
         super().__init__()
@@ -45,6 +46,7 @@ class PublicProto(Bridge):
         self.resolved = False
         self.peer = "?"
         self.link = None
+        self.rw: Rewriter | None = None
 
     def on_connected(self) -> None:
         self.peer = peer_str(self.transport.get_extra_info("peername"))
@@ -115,6 +117,7 @@ class PublicProto(Bridge):
                 self._reject(502, b"tunnel unavailable")
                 return
             self.attach(st)
+            self._enable_rewrite(tid)
             mux.send_data(st, payload)
             if rest:
                 mux.send_data(st, rest)
@@ -135,6 +138,26 @@ class PublicProto(Bridge):
         mux.send_data(st, head)
         if rest:
             mux.send_data(st, rest)
+
+    def _enable_rewrite(self, tid: str) -> None:
+        """前缀路由：把回程的 HTML 里的 /xxx 改写成 /t/<id>/xxx。"""
+        if not getattr(self.edge, "prefix_rewrite", False):
+            return
+        if self.transport is None:
+            return
+        self.rw = Rewriter(f"{self.edge.prefix}/{tid}".encode(), self.transport.write)
+
+    def write_payload(self, payload: bytes) -> None:
+        if self.rw is not None:
+            self.rw.feed(payload)
+            return
+        super().write_payload(payload)
+
+    def on_stream_done(self) -> None:
+        if self.rw is not None:
+            self.rw.flush()
+            self.rw = None
+        super().on_stream_done()
 
     def _handle_ws(self, head: bytes, rest: bytes) -> None:
         """把这条 HTTP 连接升级成 WebSocket，之后就是一条普通的客户端控制连接。
@@ -163,6 +186,9 @@ class PublicProto(Bridge):
         self.link.start(rest)
 
     def connection_lost(self, exc) -> None:
+        if self.rw is not None:
+            self.rw.flush()
+            self.rw = None
         if self.link is not None:
             self.link.lost(exc)
         super().connection_lost(exc)

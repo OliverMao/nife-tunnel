@@ -85,6 +85,16 @@ async def origin_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWri
                 headers[k.strip().lower()] = v.strip()
             length = int(headers.get("content-length") or 0)
             body = await reader.readexactly(length) if length else b""
+            if path.startswith("/spa"):
+                html = (b'<!doctype html><script src="/assets/x.js"></script>'
+                        b'<link href="/assets/y.css" rel="stylesheet">')
+                head_out = (
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
+                    + b"Content-Length: " + str(len(html)).encode() + b"\r\nConnection: keep-alive\r\n\r\n"
+                )
+                writer.write(head_out + html)
+                await writer.drain()
+                continue
             payload = (f"posted:{len(body)}" if method == "POST"
                        else f"origin:{headers.get('host')}{path}").encode()
             writer.write(
@@ -339,6 +349,12 @@ async def main() -> int:
         status, body = await one_call(pub, PREFIX_HOST, f"/t/{auto_id}/auto")
         assert (status, body) == (200, b"origin:" + PREFIX_HOST.encode() + b"/auto"), (status, body)
         step(f"客户端不写 id -> 服务端分配 {auto_id}，URL 可用、已落盘")
+
+        status, body = await one_call(pub, PREFIX_HOST, f"/t/{TUNNEL_ID}/spa")
+        assert status == 200, status
+        assert f'src="/t/{TUNNEL_ID}/assets/x.js"'.encode() in body, body
+        assert f'href="/t/{TUNNEL_ID}/assets/y.css"'.encode() in body, body
+        step("前缀路由下 HTML 里的 /assets/… 自动改写成 /t/<id>/assets/…（第三方前端免改）")
 
         status, _ = await one_call(pub, "evil.example.com", "/")
         assert status == 403, status

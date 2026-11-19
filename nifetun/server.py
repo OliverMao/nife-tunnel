@@ -306,6 +306,7 @@ class Edge:
         self.backlog = int(cfg.get("backlog") or 2048)
         self.access_log = bool(cfg.get("access_log", True))
         self.ws_path = str(cfg.get("ws_path") or "/_nifetun/ws").encode()
+        self.prefix_rewrite = bool(cfg.get("prefix_rewrite", True))
         self.id_owner: dict[str, str] = {}
         #: "客户端|本地地址" -> 隧道 ID，保证同一客户端的多条连接拿到同一个 URL
         self.id_by_local: dict[str, str] = {}
