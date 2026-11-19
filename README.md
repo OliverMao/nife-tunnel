@@ -24,7 +24,8 @@ nife install git:github.com/OliverMao/nife-tunnel@v0.3.0
 ```
 
 ```
-/tunnel up 8080        # 本机 8080 → https://nife-tunnel.yoobit.cn/t/xxxx/
+/tunnel up 8080          # 默认占域名根：https://<域名>/  （前端不用改）
+/tunnel up 8080 --prefix # 要走 /t/<id>/ 时加 --prefix
 /tunnel status
 /tunnel down
 ```
@@ -58,7 +59,8 @@ nife install git:github.com/OliverMao/nife-tunnel@v0.2.0
 ```
 
 ```
-/tunnel up 8080        # 本机 8080 → https://nife-tunnel.yoobit.cn/t/xxxx/
+/tunnel up 8080          # 默认占域名根：https://<域名>/  （前端不用改）
+/tunnel up 8080 --prefix # 要走 /t/<id>/ 时加 --prefix
 /tunnel status
 /tunnel down
 ```

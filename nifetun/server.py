@@ -67,6 +67,7 @@ class ClientConn(MuxConn):
         self.hosts: list[str] = []
         self.ids: list[str] = []
         self.is_root = False
+        self._root_logged = False
         self.client_name = ""
         self.authed = False
         self.connected_at = time.monotonic()
@@ -189,13 +190,15 @@ class ClientConn(MuxConn):
             if t.get("root"):
                 # 域名根交给这条隧道：前端可以继续用 /api/xxx、/assets/xxx 这种根绝对路径
                 owner = self.edge.root_conn
-                if owner is not None and owner is not self:
-                    log.warning("%s 想占用域名根，但已被 %s 占用，拒绝", self.peer, owner.peer)
+                if owner is not None and owner.client_name != self.client_name:
+                    log.warning("%s 想占用域名根，但已被客户端 %s 占用，拒绝",
+                                self.peer, owner.client_name)
                     denied.append("root")
                     continue
                 self.edge.set_root(self)
                 roots.append({"local": local, "root": True})
-                if not self.is_root:
+                if self.edge.root_conn is self and not self._root_logged:
+                    self._root_logged = True
                     log.info("%s 占用域名根 / -> %s", self.peer, local)
                 continue
             if tid:
@@ -243,12 +246,14 @@ class ClientConn(MuxConn):
             self.edge.add_routes(self, add_h)
         if add_i:
             self.edge.add_id_routes(self, add_i)
-        if not roots and self.is_root:
-            self.edge.set_root(None)
+        if roots:
+            self.is_root = True
+        elif self.is_root:
             self.is_root = False
+            self._root_logged = False
+            if self.edge.root_conn is self:
+                self.edge.set_root(None)
             log.info("%s 释放域名根", self.peer)
-        else:
-            self.is_root = bool(roots)
         self.hosts = hosts
         self.ids = ids
         self.write_frame(
@@ -594,7 +599,8 @@ class Edge:
 
     def unregister(self, conn: ClientConn) -> None:
         if self.root_conn is conn:
-            self.root_conn = None
+            # 同客户端还有别的连接在线就顶上，别让域名根掉线
+            self.root_conn = next((c for c in self.clients if c.client_name == conn.client_name), None)
         self.clients.discard(conn)
         self.remove_routes(conn, conn.hosts)
         self.remove_id_routes(conn, conn.ids)

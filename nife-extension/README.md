@@ -23,11 +23,15 @@ nife list
 
 ```bash
 nife
-> /tunnel up 8080              # 把 127.0.0.1:8080 暴露出去
-> /tunnel up 8080 5000         # 多个端口
+> /tunnel up 8080              # 默认占用域名根 → https://<域名>/
+> /tunnel up 8080 5000         # 多个端口：第一个占根，其余走 /t/<id>/
+> /tunnel up 8080 --prefix     # 强制走 /t/<id>/ 前缀（多应用共用域名时用）
 > /tunnel status
 > /tunnel down
 ```
+
+**默认占域名根**：前端不用改（`/assets/…`、`/api/…` 这些根绝对路径原样到达应用）。
+同一时刻只有一条 root 隧道，别的客户端来抢会被拒绝。
 
 直接跟 nife 说也行（模型会调工具）：
 
